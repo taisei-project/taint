@@ -1,0 +1,449 @@
+// Copyright 2026 The Dawn & Tint Authors
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// Test the type checks of dawn::Span.
+//
+// Note: All unsafe buffer warning tests are in warning_nocompile.nc.
+// Warnings don't trigger in this file because it contains errors. Because of this,
+// DAWN_UNSAFE_BUFFERS() annotations also don't need be to used in this file - they're ignored.
+
+#include <array>
+
+#include "src/utils/span.h"
+#include "src/utils/typed_integer.h"
+
+namespace dawn {
+
+static constexpr std::array<int, 5> kSpanData = {1, 2, 3, 4, 5};
+
+using Index = TypedInteger<struct IndexT, uint32_t>;
+using Index8 = TypedInteger<struct IndexT, uint8_t>;
+using IndexSizeT = TypedInteger<struct IndexT, size_t>;
+
+struct FakeRange {
+    size_t size() const { return kSpanData.size(); }
+    const int* data() const { return kSpanData.data(); }
+    auto begin() { return kSpanData.begin(); }
+    auto end() { return kSpanData.end(); }
+};
+
+struct FakeTypedRange {
+    Index size() const {
+        return Index{uint32_t{kSpanData.size()}};
+    }
+    const int* data() const { return kSpanData.data(); }
+    auto begin() { return kSpanData.begin(); }
+    auto end() { return kSpanData.end(); }
+};
+
+void TestConstPointerToNonConstSpan() {
+    Span<const int>{kSpanData.data(), kSpanData.size()}; // Control case.
+    Span<int>{kSpanData.data(), kSpanData.size()}; // expected-error {{no matching constructor for initialization}}
+
+    Span<const int>{kSpanData.begin(), kSpanData.end()}; // Control case.
+    Span<int>{kSpanData.begin(), kSpanData.end()}; // expected-error {{no matching constructor for initialization}}
+
+    Span<const int, 5>{kSpanData.data()}; // Control case.
+    Span<int, 5>{kSpanData.data()}; // expected-error {{no matching constructor for initialization}}
+
+    Span<const int>{FakeRange()}; // Control case.
+    Span<int>{FakeRange()}; // expected-error {{no matching constructor for initialization}}
+
+    RawSpan<const int>{kSpanData.data(), kSpanData.size()}; // Control case.
+    RawSpan<int>{kSpanData.data(), kSpanData.size()}; // expected-error {{no matching constructor for initialization}}
+
+    RawSpan<const int>{kSpanData.begin(), kSpanData.end()}; // Control case.
+    RawSpan<int>{kSpanData.begin(), kSpanData.end()}; // expected-error {{no matching constructor for initialization}}
+
+    RawSpan<const int, 5>{kSpanData.data()}; // Control case.
+    RawSpan<int, 5>{kSpanData.data()}; // expected-error {{no matching constructor for initialization}}
+
+    RawSpan<const int>{FakeRange()}; // Control case.
+    RawSpan<int>{FakeRange()}; // expected-error {{no matching constructor for initialization}}
+}
+
+void TestConstructorWithRangeRequirements() {
+    Span<const int>{FakeRange()}; // Control case.
+    RawSpan<const int>{FakeRange()}; // Control case.
+
+    struct FakeRangeBadSize {
+        uint8_t size() const {
+            return uint8_t{kSpanData.size()};
+        }
+        const int* data() const { return kSpanData.data(); }
+    };
+    Span<const int>{FakeRangeBadSize()}; // expected-error {{no matching constructor for initialization of}}
+    RawSpan<const int>{FakeRangeBadSize()}; // expected-error {{no matching constructor for initialization of}}
+
+    struct FakeRangeTypedSize {
+         IndexSizeT size() const {
+            return IndexSizeT{kSpanData.size()};
+        }
+        const int* data() const { return kSpanData.data(); }
+    };
+    Span<const int>{FakeRangeTypedSize()}; // expected-error {{no matching constructor for initialization of}}
+    RawSpan<const int>{FakeRangeTypedSize()}; // expected-error {{no matching constructor for initialization of}}
+
+    struct FakeRangeBadData {
+        size_t size() const {
+            return kSpanData.size();
+        }
+        const int& data() const { return *kSpanData.data(); }
+    };
+    Span<const int>{FakeRangeBadData()}; // expected-error {{no matching constructor for initialization of}}
+    RawSpan<const int>{FakeRangeBadData()}; // expected-error {{no matching constructor for initialization of}}
+}
+
+void TestTypedIntegerArguments() {
+    {
+        ityp::span<Index, const int> sp{FakeTypedRange()};
+
+        ityp::span<Index, const int>(kSpanData.data(), kSpanData.size()); // expected-error {{no matching constructor for initialization}}
+        std::ignore = sp.at(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp[2]; // expected-error {{no viable overloaded operator[]}}
+        std::ignore = sp.first(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.last(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.subspan(2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.subspan(2, 2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.SplitAt(2); // expected-error {{no viable conversion}}
+        std::ignore = sp.TakeFirst(2); // expected-error {{no viable conversion}}
+    }{
+        ityp::span<Index, const int, Index{5u}> sp{FakeTypedRange()};
+
+        ityp::span<Index, const int, 5>{FakeTypedRange()}; // expected-error {{no viable conversion}}
+        ityp::span<Index, const int, Index{5u}>(kSpanData.data(), kSpanData.size()); // expected-error {{no matching constructor for initialization}}
+        std::ignore = sp.at(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp[2]; // expected-error {{no viable overloaded operator[]}}
+        std::ignore = sp.first(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.last(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.subspan(2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.subspan(2, 2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.SplitAt(2); // expected-error {{no viable conversion}}
+    }
+    {
+        ityp::raw_span<Index, const int> sp{FakeTypedRange()};
+
+        ityp::raw_span<Index, const int>(kSpanData.data(), kSpanData.size()); // expected-error {{no matching constructor for initialization}}
+        std::ignore = sp.at(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp[2]; // expected-error {{no viable overloaded operator[]}}
+        std::ignore = sp.first(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.last(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.subspan(2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.subspan(2, 2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.SplitAt(2); // expected-error {{no viable conversion}}
+        std::ignore = sp.TakeFirst(2); // expected-error {{no viable conversion}}
+    }{
+        ityp::raw_span<Index, const int, Index{5u}> sp{FakeTypedRange()};
+
+        ityp::raw_span<Index, const int, 5>{FakeTypedRange()}; // expected-error {{no viable conversion}}
+        ityp::raw_span<Index, const int, Index{5u}>(kSpanData.data(), kSpanData.size()); // expected-error {{no matching constructor for initialization}}
+        std::ignore = sp.at(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp[2]; // expected-error {{no viable overloaded operator[]}}
+        std::ignore = sp.first(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.last(2); // expected-error {{no viable conversion from}}
+        std::ignore = sp.subspan(2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.subspan(2, 2); // expected-error {{no matching member function for call to}}
+        std::ignore = sp.SplitAt(2); // expected-error {{no viable conversion}}
+    }
+}
+
+void TestAsWriteableBytesRequiresNonConst() {
+    auto sp = Span<const int>{FakeRange()};
+
+    SpanAsBytes(sp); // Control case
+    SpanAsWritableBytes(sp); // expected-error {{no matching function for call}}
+
+    auto raw_sp = RawSpan<const int>{FakeRange()};
+
+    SpanAsBytes(raw_sp); // Control case
+    SpanAsWritableBytes(raw_sp); // expected-error {{no matching function for call}}
+}
+
+void TestAsBytesRetainsVolatile() {
+    std::array<int, 3> ints{};
+
+    auto sp = Span<volatile int>{ints};
+    {
+        // Control case
+        [[maybe_unused]] Span<const volatile std::byte> vbsp = SpanAsBytes(sp);
+        [[maybe_unused]] Span<volatile std::byte> vwbsp = SpanAsWritableBytes(sp);
+        [[maybe_unused]] Span<const volatile std::byte, 3 * sizeof(int)> fvbsp = SpanAsBytes(sp);
+        [[maybe_unused]] Span<volatile std::byte, 3 * sizeof(int)> fvwbsp = SpanAsWritableBytes(sp);
+    }
+    {
+        Span<const std::byte> vbsp = SpanAsBytes(sp); // expected-error {{no viable conversion from}}
+        Span<std::byte> vwbsp = SpanAsWritableBytes(sp); // expected-error {{no viable conversion from}}
+        Span<const std::byte, 3 * sizeof(int)> fvbsp = SpanAsBytes(sp); // expected-error {{no viable conversion from}}
+        Span<std::byte, 3 * sizeof(int)> fvwbsp = SpanAsWritableBytes(sp); // expected-error {{no viable conversion from}}
+    }
+
+    auto raw_sp = RawSpan<volatile int>{ints};
+    {
+        // Control case
+        [[maybe_unused]] RawSpan<const volatile std::byte> vbsp = SpanAsBytes(raw_sp);
+        [[maybe_unused]] RawSpan<volatile std::byte> vwbsp = SpanAsWritableBytes(raw_sp);
+        [[maybe_unused]] RawSpan<const volatile std::byte, 3 * sizeof(int)> fvbsp = SpanAsBytes(raw_sp);
+        [[maybe_unused]] RawSpan<volatile std::byte, 3 * sizeof(int)> fvwbsp = SpanAsWritableBytes(raw_sp);
+    }
+    {
+        RawSpan<const std::byte> vbsp = SpanAsBytes(raw_sp); // expected-error {{no viable conversion from}}
+        RawSpan<std::byte> vwbsp = SpanAsWritableBytes(raw_sp); // expected-error {{no viable conversion from}}
+        RawSpan<const std::byte, 3 * sizeof(int)> fvbsp = SpanAsBytes(raw_sp); // expected-error {{no viable conversion from}}
+        RawSpan<std::byte, 3 * sizeof(int)> fvwbsp = SpanAsWritableBytes(raw_sp); // expected-error {{no viable conversion from}}
+    }
+}
+
+void TestReinterpretSpan() {
+    {
+        // Non-byte source.
+        std::array<int, 3> ints{};
+        {
+            auto s = Span<int>{ints};
+            auto r1 = ReinterpretSpan<int>(s);  // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index>(s);  // expected-error {{no matching function for call}}
+        }
+        {
+            auto s = Span<int, 3>{ints};
+            auto r1 = ReinterpretSpan<int, 3>(s);  // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index, 3>(s);  // expected-error {{no matching function for call}}
+        }
+        {
+            auto s = RawSpan<int>{ints};
+            auto r1 = ReinterpretSpan<int>(s);  // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index>(s);  // expected-error {{no matching function for call}}
+        }
+        {
+            auto s = RawSpan<int, 3>{ints};
+            auto r1 = ReinterpretSpan<int, 3>(s);  // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index, 3>(s);  // expected-error {{no matching function for call}}
+        }
+    }
+    {
+        // Casting away const or volatile.
+        std::array<std::byte, 4> bytes;
+        {
+            auto const_s = Span<const std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(const_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<volatile char>(const_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<char, Index>(const_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<volatile char, Index>(const_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto volatile_s = Span<volatile std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(volatile_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<const char>(volatile_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<char, Index>(volatile_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<const char, Index>(volatile_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto cv_s = Span<const volatile std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(cv_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<const char>(cv_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<volatile char>(cv_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<char, Index>(cv_s); // expected-error {{no matching function for call}}
+            auto r5 = ReinterpretSpan<const char, Index>(cv_s); // expected-error {{no matching function for call}}
+            auto r6 = ReinterpretSpan<volatile char, Index>(cv_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto const_s = RawSpan<const std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(const_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<volatile char>(const_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<char, Index>(const_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<volatile char, Index>(const_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto volatile_s = RawSpan<volatile std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(volatile_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<const char>(volatile_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<char, Index>(volatile_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<const char, Index>(volatile_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto cv_s = RawSpan<const volatile std::byte>{bytes};
+            auto r1 = ReinterpretSpan<char>(cv_s); // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<const char>(cv_s); // expected-error {{no matching function for call}}
+            auto r3 = ReinterpretSpan<volatile char>(cv_s); // expected-error {{no matching function for call}}
+            auto r4 = ReinterpretSpan<char, Index>(cv_s); // expected-error {{no matching function for call}}
+            auto r5 = ReinterpretSpan<const char, Index>(cv_s); // expected-error {{no matching function for call}}
+            auto r6 = ReinterpretSpan<volatile char, Index>(cv_s); // expected-error {{no matching function for call}}
+        }
+    }
+    {
+        // ityp::span and ityp::raw_span inputs disallowed.
+        std::array<std::byte, 4> bytes;
+        {
+            auto ityp_s = ityp::span<Index, std::byte>{bytes.data(), Index{4u}};
+            auto r1 = ReinterpretSpan<int>(ityp_s);        // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index>(ityp_s); // expected-error {{no matching function for call}}
+        }
+        {
+            auto ityp_raw_s = ityp::raw_span<Index, std::byte>{bytes.data(), Index{4u}};
+            auto r1 = ReinterpretSpan<int>(ityp_raw_s);        // expected-error {{no matching function for call}}
+            auto r2 = ReinterpretSpan<int, Index>(ityp_raw_s); // expected-error {{no matching function for call}}
+        }
+    }
+}
+
+void TestCopyFromIncompatibleTypes() {
+    std::array<int, 3> dst_data;
+    Span<int> dst{dst_data};
+
+    // Different element type
+    {
+        std::array<float, 3> src;
+        dst.CopyFrom(src);  // expected-error {{no matching member function for call}}
+        dst.CopyPrefixFrom(src);  // expected-error {{no matching member function for call}}
+    }
+
+    // Different index type
+    {
+        dst.CopyFrom(FakeTypedRange()); // expected-error {{no matching member function for call}}
+        dst.CopyPrefixFrom(FakeTypedRange()); // expected-error {{no matching member function for call}}
+    }
+
+    // Const destination
+    {
+        Span<const int> const_dst{dst_data};
+        std::array<int, 3> src = {1, 2, 3};
+        const_dst.CopyFrom(src); // expected-error {{no matching member function for call}}
+        const_dst.CopyPrefixFrom(src); // expected-error {{no matching member function for call}}
+    }
+
+    RawSpan<int> raw_dst{dst_data};
+
+    // Different element type
+    {
+        std::array<float, 3> src;
+        raw_dst.CopyFrom(src);  // expected-error {{no matching member function for call}}
+        raw_dst.CopyPrefixFrom(src);  // expected-error {{no matching member function for call}}
+    }
+
+    // Different index type
+    {
+        raw_dst.CopyFrom(FakeTypedRange()); // expected-error {{no matching member function for call}}
+        raw_dst.CopyPrefixFrom(FakeTypedRange()); // expected-error {{no matching member function for call}}
+    }
+
+    // Const destination
+    {
+        RawSpan<const int> const_dst{dst_data};
+        std::array<int, 3> src = {1, 2, 3};
+        const_dst.CopyFrom(src); // expected-error {{no matching member function for call}}
+        const_dst.CopyPrefixFrom(src); // expected-error {{no matching member function for call}}
+    }
+}
+
+void TestItypSpanFromCArray() {
+    int arr[] = {1, 2, 3, 4, 5};
+
+    // Control case: Standard dawn::Span<int> allows construction from C-style array.
+    Span<int> control_sp(arr);
+    RawSpan<int> raw_control_sp(arr);
+
+    // Disallowed case: ityp::span<Index, int> must not implicitly construct
+    // from a non-typed C-style array or non-typed range.
+    ityp::span<Index, int> typed_sp(arr);                   // expected-error@span.h:* {{ityp::span cannot be constructed from a C array type}}
+    ityp::raw_span<Index, int> raw_typed_sp(arr);           // expected-error@span.h:* {{ityp::span cannot be constructed from a C array type}}
+    ityp::span<Index, int, Index{5u}> typed_sized_sp(arr);  // expected-error@span.h:* {{ityp::span cannot be constructed from a C array type}}
+
+    // Cannot construct if element type is wrong
+    Span<unsigned int> wrong_sp(arr);           // expected-error {{no matching constructor for initialization}}
+    Span<unsigned int, 5> sized_wrong_sp(arr);  // expected-error {{no matching constructor for initialization}}
+
+    // Cannot construct if static span size is wrong
+    Span<int, 6> size6_sp(arr);  // expected-error@span.h:* {{Span cannot be constructed from this C array type}}
+    Span<int, 5> size5_sp(arr);
+    Span<int, 4> size4_sp(arr);  // expected-error@span.h:* {{Span cannot be constructed from this C array type}}
+}
+
+void TestItypSpanFromInitializerList() {
+    std::initializer_list<int> list = {1, 2, 3, 4, 5};
+
+    // Control case: Span<const int> allows construction from initializer_list.
+    Span<const int> control_sp(list);
+    RawSpan<const int> raw_control_sp(list);
+
+    // Error case: Span<int> (non-const) fails construction from initializer_list.
+    Span<int> nonconst_sp(list); // expected-error {{no matching constructor for initialization}}
+    RawSpan<int> raw_nonconst_sp(list); // expected-error {{no matching constructor for initialization}}
+
+    // Error case: ityp::span<Index, const int>  fails construction from initializer_list.
+    ityp::span<Index, const int> typed_sp(list); // expected-error {{no matching constructor for initialization}}
+    ityp::raw_span<Index, const int> raw_typed_sp(list); // expected-error {{no matching constructor for initialization}}
+}
+
+void TestFixedExtentTakeFirst() {
+    std::array<int, 3> arr = {1, 2, 3};
+    Span<int, 3> sp(arr);
+    sp.TakeFirst(1);  // expected-error {{invalid reference to function 'TakeFirst': constraints not satisfied}}
+
+    RawSpan<int, 3> raw_sp(arr);
+    raw_sp.TakeFirst(1);  // expected-error {{invalid reference to function 'TakeFirst': constraints not satisfied}}
+}
+
+void TestFixedExtentReinterpretSizeMismatch() {
+    alignas(uint32_t) std::array<std::byte, 7> bytes{};
+    Span<std::byte, 7> bsp{bytes};
+    ReinterpretSpan<uint32_t>(bsp);  // expected-error {{no matching function for call to 'ReinterpretSpan'}}
+
+    RawSpan<std::byte, 7> raw_bsp{bytes};
+    ReinterpretSpan<uint32_t>(raw_bsp);  // expected-error {{no matching function for call to 'ReinterpretSpan'}}
+}
+
+void TestFixedExtentReinterpretIndexOverflow() {
+    {
+        alignas(uint32_t) std::array<std::byte, 256> bytes{};
+        Span<std::byte, 256> bsp{bytes};
+        ReinterpretSpan<uint8_t, Index8>(bsp);  // expected-error {{no matching function for call to 'ReinterpretSpan'}}
+    }
+    {
+        alignas(uint32_t) std::array<std::byte, 255> bytes{};
+        Span<std::byte, 255> bsp{bytes};
+        ReinterpretSpan<uint8_t, Index8>(bsp);  // expected-error {{no matching function for call to 'ReinterpretSpan'}}
+    }
+}
+
+void TestFillBytesNonByteSpan() {
+    std::array<int, 3> arr = {1, 2, 3};
+    Span<int, 3> sp(arr);
+    sp.FillBytes(std::byte{0});  // expected-error {{invalid reference to function 'FillBytes': constraints not satisfied}}
+
+    RawSpan<int, 3> raw_sp(arr);
+    raw_sp.FillBytes(std::byte{0});  // expected-error {{invalid reference to function 'FillBytes': constraints not satisfied}}
+}
+
+void TestFillUntypedSize() {
+    // Control case: typed, dynamic extent spans have untyped_size.
+    ityp::span<Index, int>{}.untyped_size();
+
+    ityp::span<Index, int, Index{uint32_t{3u}}>{}.untyped_size();  // expected-error {{invalid reference to function 'untyped_size': constraints not satisfied}}
+    Span<int>{}.untyped_size(); // expected-error {{invalid reference to function 'untyped_size': constraints not satisfied}}
+    Span<int, 3u>{}.untyped_size(); // expected-error {{invalid reference to function 'untyped_size': constraints not satisfied}}
+
+}
+
+}  // namespace dawn
