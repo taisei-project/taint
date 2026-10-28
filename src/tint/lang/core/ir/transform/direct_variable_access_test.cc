@@ -1,0 +1,10635 @@
+// Copyright 2023 The Dawn & Tint Authors
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+//    contributors may be used to endorse or promote products derived from
+//    this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#include "src/tint/lang/core/ir/transform/direct_variable_access.h"
+
+#include <utility>
+
+#include "src/tint/lang/core/ir/transform/helper_test.h"
+#include "src/tint/lang/core/type/array.h"
+#include "src/tint/lang/core/type/binding_array.h"
+#include "src/tint/lang/core/type/matrix.h"
+#include "src/tint/lang/core/type/pointer.h"
+#include "src/tint/lang/core/type/sampled_texture.h"
+#include "src/tint/lang/core/type/sampler.h"
+#include "src/tint/lang/core/type/struct.h"
+
+namespace tint::core::ir::transform {
+namespace {
+
+using namespace tint::core::fluent_types;     // NOLINT
+using namespace tint::core::number_suffixes;  // NOLINT
+
+namespace {
+
+static constexpr DirectVariableAccessConfig kTransformHandle = {
+    /* transform_private */ false,
+    /* transform_function */ false,
+    /* transform_handle */ HandleTransformLevel::kFull,
+};
+
+static constexpr DirectVariableAccessConfig kTransformExternalHandle = {
+    /* transform_private */ false,
+    /* transform_function */ false,
+    /* transform_handle */ HandleTransformLevel::kExternal,
+};
+
+static constexpr DirectVariableAccessConfig kTransformPrivate = {
+    /* transform_private */ true,
+    /* transform_function */ false,
+    /* transform_handle */ HandleTransformLevel::kNone,
+};
+
+static constexpr DirectVariableAccessConfig kTransformFunction = {
+    /* transform_private */ false,
+    /* transform_function */ true,
+    /* transform_handle */ HandleTransformLevel::kNone,
+};
+
+}  // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+// remove uncalled
+////////////////////////////////////////////////////////////////////////////////
+namespace remove_uncalled {
+
+using IR_DirectVariableAccessTest_RemoveUncalled = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrUniform) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* u = b.Function("u", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<uniform, i32>());
+    u->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(u->Block(), [&] { b.Return(u, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%u = func(%pre:i32, %p:ptr<uniform, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrStorage) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* s = b.Function("s", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<storage, i32, read>());
+    s->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(s->Block(), [&] { b.Return(s, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%s = func(%pre:i32, %p:ptr<storage, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrWorkgroup) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* w = b.Function("w", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<workgroup, i32>());
+    w->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(w->Block(), [&] { b.Return(w, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%w = func(%pre:i32, %p:ptr<workgroup, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrImmediate) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* u = b.Function("u", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<immediate, i32>());
+    u->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(u->Block(), [&] { b.Return(u, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%u = func(%pre:i32, %p:ptr<immediate, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrPrivate_Disabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(), [&] { b.Return(f, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrPrivate_Enabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(), [&] { b.Return(f, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrFunction_Disabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<function, i32>());
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(), [&] { b.Return(f, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, PtrFunction_Enabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.i32());
+    auto* p = b.FunctionParam("p", ty.ptr<function, i32>());
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(), [&] { b.Return(f, b.Load(p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+)";
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, HandleTexture_Disabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.i32());
+    auto* p = b.FunctionParam("p", ty.sampled_texture(core::type::TextureDimension::k1d, ty.f32()));
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(), [&] { b.Return(f, b.Constant(2_i)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:texture_1d<f32>, %post:i32):i32 {
+  $B2: {
+    ret 2i
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, HandleTexture_Enabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.u32());
+    auto* p = b.FunctionParam("p", ty.sampled_texture(core::type::TextureDimension::k1d, ty.f32()));
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(),
+             [&] { b.Return(f, b.Call(ty.u32(), core::BuiltinFn::kTextureDimensions, p, 0_u)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:texture_1d<f32>, %post:i32):u32 {
+  $B2: {
+    %6:u32 = textureDimensions %p, 0u
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_RemoveUncalled, HandleExternalTexture_Enabled) {
+    b.Append(b.ir.root_block, [&] { b.Var<private_>("keep_me", 42_i); });
+
+    auto* f = b.Function("f", ty.vec2u());
+    auto* p = b.FunctionParam("p", ty.external_texture());
+    f->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(f->Block(),
+             [&] { b.Return(f, b.Call(ty.vec2u(), core::BuiltinFn::kTextureDimensions, p)); });
+
+    auto* src = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+%f = func(%pre:i32, %p:texture_external, %post:i32):vec2<u32> {
+  $B2: {
+    %6:vec2<u32> = textureDimensions %p
+    ret %6
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %keep_me:ptr<private, i32, read_write> = var 42i
+}
+
+)";
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace remove_uncalled
+
+////////////////////////////////////////////////////////////////////////////////
+// pointer chains
+////////////////////////////////////////////////////////////////////////////////
+namespace pointer_chains_tests {
+
+using IR_DirectVariableAccessTest_PtrChains = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_PtrChains, ConstantIndices) {
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>>("U");
+                 U->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.vec4i());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<uniform, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_());
+    b.Append(fn_b->Block(), [&] {
+        auto* p0 = b.Let("p0", U);
+        auto* p1 = b.Access(ty.ptr<uniform, array<array<vec4<i32>, 8>, 8>>(), p0, 1_i);
+        b.ir.SetName(p1, "p1");
+        auto* p2 = b.Access(ty.ptr<uniform, array<vec4<i32>, 8>>(), p1, 2_i);
+        b.ir.SetName(p2, "p2");
+        auto* p3 = b.Access(ty.ptr<uniform, vec4<i32>>(), p2, 3_i);
+        b.ir.SetName(p3, "p3");
+        b.Call(ty.vec4i(), fn_a, 10_i, p3, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* fn_c = b.Function("c", ty.void_());
+    auto* fn_c_p = b.FunctionParam("p", ty.ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>>());
+    fn_c->SetParams({fn_c_p});
+    b.Append(fn_c->Block(), [&] {
+        auto* p0 = b.Let("p0", fn_c_p);
+        auto* p1 = b.Access(ty.ptr<uniform, array<array<vec4<i32>, 8>, 8>>(), p0, 1_i);
+        b.ir.SetName(p1, "p1");
+        auto* p2 = b.Access(ty.ptr<uniform, array<vec4<i32>, 8>>(), p1, 2_i);
+        b.ir.SetName(p2, "p2");
+        auto* p3 = b.Access(ty.ptr<uniform, vec4<i32>>(), p2, 3_i);
+        b.ir.SetName(p3, "p3");
+        b.Call(ty.vec4i(), fn_a, 10_i, p3, 20_i);
+        b.Return(fn_c);
+    });
+
+    auto* fn_d = b.Function("d", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_d->Block(), [&] {
+        b.Call(ty.void_(), fn_b);
+        b.Call(ty.void_(), fn_c, U);
+        b.Return(fn_d);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<uniform, vec4<i32>, read>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:vec4<i32> = load %p
+    ret %6
+  }
+}
+%b = func():void {
+  $B3: {
+    %p0:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = let %U
+    %p1:ptr<uniform, array<array<vec4<i32>, 8>, 8>, read> = access %p0, 1i
+    %p2:ptr<uniform, array<vec4<i32>, 8>, read> = access %p1, 2i
+    %p3:ptr<uniform, vec4<i32>, read> = access %p2, 3i
+    %12:vec4<i32> = call %a, 10i, %p3, 20i
+    ret
+  }
+}
+%c = func(%p_1:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read>):void {  # %p_1: 'p'
+  $B4: {
+    %p0_1:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = let %p_1  # %p0_1: 'p0'
+    %p1_1:ptr<uniform, array<array<vec4<i32>, 8>, 8>, read> = access %p0_1, 1i  # %p1_1: 'p1'
+    %p2_1:ptr<uniform, array<vec4<i32>, 8>, read> = access %p1_1, 2i  # %p2_1: 'p2'
+    %p3_1:ptr<uniform, vec4<i32>, read> = access %p2_1, 3i  # %p3_1: 'p3'
+    %19:vec4<i32> = call %a, 10i, %p3_1, 20i
+    ret
+  }
+}
+%d = @fragment func():void {
+  $B5: {
+    %21:void = call %b
+    %22:void = call %c, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect =
+        R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 3>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:u32 = access %p_indices, 1u
+    %8:u32 = access %p_indices, 2u
+    %9:ptr<uniform, vec4<i32>, read> = access %U, %6, %7, %8
+    %10:vec4<i32> = load %9
+    ret %10
+  }
+}
+%b = func():void {
+  $B3: {
+    %12:vec4<i32> = call %a, 10i, array<u32, 3>(1u, 2u, 3u), 20i
+    ret
+  }
+}
+%c = func():void {
+  $B4: {
+    %14:vec4<i32> = call %a, 10i, array<u32, 3>(1u, 2u, 3u), 20i
+    ret
+  }
+}
+%d = @fragment func():void {
+  $B5: {
+    %16:void = call %b
+    %17:void = call %c
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PtrChains, DynamicIndices) {
+    Var* U = nullptr;
+    Var* i = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>>("U");
+                 U->SetBindingPoint(0, 0);
+                 i = b.Var<private_, i32>("i");
+             });
+
+    auto* fn_first = b.Function("first", ty.i32());
+    auto* fn_second = b.Function("second", ty.i32());
+    auto* fn_third = b.Function("third", ty.i32());
+    for (auto fn : {fn_first, fn_second, fn_third}) {
+        b.Append(fn->Block(), [&] {
+            b.Store(i, b.Add(b.Load(i), 1_i));
+            b.Return(fn, b.Load(i));
+        });
+    }
+
+    auto* fn_a = b.Function("a", ty.vec4i());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<uniform, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_());
+    b.Append(fn_b->Block(), [&] {
+        auto* p0 = b.Let("p0", U);
+        auto* first = b.Call(fn_first);
+        auto* p1 = b.Access(ty.ptr<uniform, array<array<vec4<i32>, 8>, 8>>(), p0, first);
+        b.ir.SetName(p1, "p1");
+        auto* second = b.Call(fn_second);
+        auto* third = b.Call(fn_third);
+        auto* p2 = b.Access(ty.ptr<uniform, vec4<i32>>(), p1, second, third);
+        b.ir.SetName(p2, "p2");
+        b.Call(ty.vec4i(), fn_a, 10_i, p2, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* fn_c = b.Function("c", ty.void_());
+    auto* fn_c_p = b.FunctionParam("p", ty.ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>>());
+    fn_c->SetParams({fn_c_p});
+    b.Append(fn_c->Block(), [&] {
+        auto* p0 = b.Let("p0", fn_c_p);
+        auto* first = b.Call(fn_first);
+        auto* p1 = b.Access(ty.ptr<uniform, array<array<vec4<i32>, 8>, 8>>(), p0, first);
+        b.ir.SetName(p1, "p1");
+        auto* second = b.Call(fn_second);
+        auto* third = b.Call(fn_third);
+        auto* p2 = b.Access(ty.ptr<uniform, vec4<i32>>(), p1, second, third);
+        b.ir.SetName(p2, "p2");
+        b.Call(ty.vec4i(), fn_a, 10_i, p2, 20_i);
+        b.Return(fn_c);
+    });
+
+    auto* fn_d = b.Function("d", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_d->Block(), [&] {
+        b.Call(ty.void_(), fn_b);
+        b.Call(ty.void_(), fn_c, U);
+        b.Return(fn_d);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = var @binding_point(0, 0)
+  %i:ptr<private, i32, read_write> = var
+}
+
+%first = func():i32 {
+  $B2: {
+    %4:i32 = load %i
+    %5:i32 = add %4, 1i
+    store %i, %5
+    %6:i32 = load %i
+    ret %6
+  }
+}
+%second = func():i32 {
+  $B3: {
+    %8:i32 = load %i
+    %9:i32 = add %8, 1i
+    store %i, %9
+    %10:i32 = load %i
+    ret %10
+  }
+}
+%third = func():i32 {
+  $B4: {
+    %12:i32 = load %i
+    %13:i32 = add %12, 1i
+    store %i, %13
+    %14:i32 = load %i
+    ret %14
+  }
+}
+%a = func(%pre:i32, %p:ptr<uniform, vec4<i32>, read>, %post:i32):vec4<i32> {
+  $B5: {
+    %19:vec4<i32> = load %p
+    ret %19
+  }
+}
+%b = func():void {
+  $B6: {
+    %p0:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = let %U
+    %22:i32 = call %first
+    %p1:ptr<uniform, array<array<vec4<i32>, 8>, 8>, read> = access %p0, %22
+    %24:i32 = call %second
+    %25:i32 = call %third
+    %p2:ptr<uniform, vec4<i32>, read> = access %p1, %24, %25
+    %27:vec4<i32> = call %a, 10i, %p2, 20i
+    ret
+  }
+}
+%c = func(%p_1:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read>):void {  # %p_1: 'p'
+  $B7: {
+    %p0_1:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = let %p_1  # %p0_1: 'p0'
+    %31:i32 = call %first
+    %p1_1:ptr<uniform, array<array<vec4<i32>, 8>, 8>, read> = access %p0_1, %31  # %p1_1: 'p1'
+    %33:i32 = call %second
+    %34:i32 = call %third
+    %p2_1:ptr<uniform, vec4<i32>, read> = access %p1_1, %33, %34  # %p2_1: 'p2'
+    %36:vec4<i32> = call %a, 10i, %p2_1, 20i
+    ret
+  }
+}
+%d = @fragment func():void {
+  $B8: {
+    %38:void = call %b
+    %39:void = call %c, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 8>, 8>, 8>, read> = var @binding_point(0, 0)
+  %i:ptr<private, i32, read_write> = var
+}
+
+%first = func():i32 {
+  $B2: {
+    %4:i32 = load %i
+    %5:i32 = add %4, 1i
+    store %i, %5
+    %6:i32 = load %i
+    ret %6
+  }
+}
+%second = func():i32 {
+  $B3: {
+    %8:i32 = load %i
+    %9:i32 = add %8, 1i
+    store %i, %9
+    %10:i32 = load %i
+    ret %10
+  }
+}
+%third = func():i32 {
+  $B4: {
+    %12:i32 = load %i
+    %13:i32 = add %12, 1i
+    store %i, %13
+    %14:i32 = load %i
+    ret %14
+  }
+}
+%a = func(%pre:i32, %p_indices:array<u32, 3>, %post:i32):vec4<i32> {
+  $B5: {
+    %19:u32 = access %p_indices, 0u
+    %20:u32 = access %p_indices, 1u
+    %21:u32 = access %p_indices, 2u
+    %22:ptr<uniform, vec4<i32>, read> = access %U, %19, %20, %21
+    %23:vec4<i32> = load %22
+    ret %23
+  }
+}
+%b = func():void {
+  $B6: {
+    %25:i32 = call %first
+    %26:i32 = call %second
+    %27:i32 = call %third
+    %28:u32 = convert %26
+    %29:u32 = convert %27
+    %30:u32 = convert %25
+    %31:array<u32, 3> = construct %30, %28, %29
+    %32:vec4<i32> = call %a, 10i, %31, 20i
+    ret
+  }
+}
+%c = func():void {
+  $B7: {
+    %34:i32 = call %first
+    %35:i32 = call %second
+    %36:i32 = call %third
+    %37:u32 = convert %35
+    %38:u32 = convert %36
+    %39:u32 = convert %34
+    %40:array<u32, 3> = construct %39, %37, %38
+    %41:vec4<i32> = call %a, 10i, %40, 20i
+    ret
+  }
+}
+%d = @fragment func():void {
+  $B8: {
+    %43:void = call %b
+    %44:void = call %c
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace pointer_chains_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'uniform' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace uniform_as_tests {
+
+using IR_DirectVariableAccessTest_UniformAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_UniformAS, Param_ptr_i32_read) {
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<uniform, i32>("U");
+                 U->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<uniform, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(fn_a, 10_i, U, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<uniform, i32, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<uniform, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:i32 = call %a, 10i, %U, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<uniform, i32, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %5:i32 = load %U
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:i32 = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_UniformAS, Param_ptr_vec4i32_Via_array_DynamicRead) {
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<uniform, array<vec4<i32>, 8>>("U");
+                 U->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.vec4i());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<uniform, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* I = b.Let("I", 3_i);
+        auto* access = b.Access(ty.ptr<uniform, vec4<i32>>(), U, I);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<vec4<i32>, 8>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<uniform, vec4<i32>, read>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:vec4<i32> = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %9:ptr<uniform, vec4<i32>, read> = access %U, %I
+    %10:vec4<i32> = call %a, 10i, %9, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<vec4<i32>, 8>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 1>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<uniform, vec4<i32>, read> = access %U, %6
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %11:u32 = convert %I
+    %12:array<u32, 1> = construct %11
+    %13:vec4<i32> = call %a, 10i, %12, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_UniformAS, CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var("U", ty.ptr<uniform>(Outer));
+                 U->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<uniform, vec4<f32>>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<uniform, mat3x4<f32>>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        auto* one = b.Let("one", 1_i);
+        auto* two = b.Let("two", 2_i);
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<uniform, vec4<f32>>(), fn_1_p, one));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<uniform, vec4<f32>>(), fn_1_p, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<uniform, vec4<f32>>(), U, 0_u, two, 0_u, one);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<uniform, vec4<f32>>(), U, 0_u, two, 0_u, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<uniform>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<uniform, mat3x4<f32>>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<uniform>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<uniform, mat3x4<f32>>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* three = b.Let("three", 3_i);
+        auto* p0_inner = b.Access(ty.ptr<uniform>(Inner), fn_3_p0, three);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<uniform>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<uniform>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<uniform, mat3x4<f32>>(), U, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, U);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %U:ptr<uniform, Outer, read> = var @binding_point(0, 0)
+}
+
+%f0 = func(%p:ptr<uniform, vec4<f32>, read>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<uniform, mat3x4<f32>, read>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %10:ptr<uniform, vec4<f32>, read> = access %p_1, %one
+    %11:f32 = call %f0, %10
+    %12:f32 = load %res
+    %13:f32 = add %12, %11
+    store %res, %13
+    %p_vec:ptr<uniform, vec4<f32>, read> = access %p_1, %one
+    %15:f32 = call %f0, %p_vec
+    %16:f32 = load %res
+    %17:f32 = add %16, %15
+    store %res, %17
+    %18:ptr<uniform, vec4<f32>, read> = access %U, 0u, %two, 0u, %one
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %p_vec_1:ptr<uniform, vec4<f32>, read> = access %U, 0u, %two, 0u, %one  # %p_vec_1: 'p_vec'
+    %23:f32 = call %f0, %p_vec_1
+    %24:f32 = load %res
+    %25:f32 = add %24, %23
+    store %res, %25
+    %26:f32 = load %res
+    ret %26
+  }
+}
+%f2 = func(%p_2:ptr<uniform, Inner, read>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<uniform, mat3x4<f32>, read> = access %p_2, 0u
+    %30:f32 = call %f1, %p_mat
+    ret %30
+  }
+}
+%f3 = func(%p0:ptr<uniform, array<Inner, 4>, read>, %p1:ptr<uniform, mat3x4<f32>, read>):f32 {
+  $B5: {
+    %three:i32 = let 3i
+    %p0_inner:ptr<uniform, Inner, read> = access %p0, %three
+    %36:f32 = call %f2, %p0_inner
+    %37:f32 = call %f1, %p1
+    %38:f32 = add %36, %37
+    ret %38
+  }
+}
+%f4 = func(%p_3:ptr<uniform, Outer, read>):f32 {  # %p_3: 'p'
+  $B6: {
+    %41:ptr<uniform, array<Inner, 4>, read> = access %p_3, 0u
+    %42:ptr<uniform, mat3x4<f32>, read> = access %U, 1u
+    %43:f32 = call %f3, %41, %42
+    ret %43
+  }
+}
+%b = @fragment func():void {
+  $B7: {
+    %45:f32 = call %f4, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %U:ptr<uniform, Outer, read> = var @binding_point(0, 0)
+}
+
+%f0 = func(%p_indices:array<u32, 1>):f32 {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<uniform, vec4<f32>, read> = access %U, 1u, %4
+    %6:f32 = load_vector_element %5, 0u
+    ret %6
+  }
+}
+%f0_1 = func(%p_indices_1:array<u32, 2>):f32 {  # %f0_1: 'f0', %p_indices_1: 'p_indices'
+  $B3: {
+    %9:u32 = access %p_indices_1, 0u
+    %10:u32 = access %p_indices_1, 1u
+    %11:ptr<uniform, vec4<f32>, read> = access %U, 0u, %9, 0u, %10
+    %12:f32 = load_vector_element %11, 0u
+    ret %12
+  }
+}
+%f1 = func():f32 {
+  $B4: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %17:u32 = convert %one
+    %18:array<u32, 1> = construct %17
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %22:u32 = convert %one
+    %23:array<u32, 1> = construct %22
+    %24:f32 = call %f0, %23
+    %25:f32 = load %res
+    %26:f32 = add %25, %24
+    store %res, %26
+    %27:u32 = convert %two
+    %28:u32 = convert %one
+    %29:array<u32, 2> = construct %27, %28
+    %30:f32 = call %f0_1, %29
+    %31:f32 = load %res
+    %32:f32 = add %31, %30
+    store %res, %32
+    %33:u32 = convert %two
+    %34:u32 = convert %one
+    %35:array<u32, 2> = construct %33, %34
+    %36:f32 = call %f0_1, %35
+    %37:f32 = load %res
+    %38:f32 = add %37, %36
+    store %res, %38
+    %39:f32 = load %res
+    ret %39
+  }
+}
+%f1_1 = func(%p_indices_2:array<u32, 1>):f32 {  # %f1_1: 'f1', %p_indices_2: 'p_indices'
+  $B5: {
+    %42:u32 = access %p_indices_2, 0u
+    %res_1:ptr<function, f32, read_write> = var  # %res_1: 'res'
+    %one_1:i32 = let 1i  # %one_1: 'one'
+    %two_1:i32 = let 2i  # %two_1: 'two'
+    %46:u32 = convert %one_1
+    %47:array<u32, 2> = construct %42, %46
+    %48:f32 = call %f0_1, %47
+    %49:f32 = load %res_1
+    %50:f32 = add %49, %48
+    store %res_1, %50
+    %51:u32 = convert %one_1
+    %52:array<u32, 2> = construct %42, %51
+    %53:f32 = call %f0_1, %52
+    %54:f32 = load %res_1
+    %55:f32 = add %54, %53
+    store %res_1, %55
+    %56:u32 = convert %two_1
+    %57:u32 = convert %one_1
+    %58:array<u32, 2> = construct %56, %57
+    %59:f32 = call %f0_1, %58
+    %60:f32 = load %res_1
+    %61:f32 = add %60, %59
+    store %res_1, %61
+    %62:u32 = convert %two_1
+    %63:u32 = convert %one_1
+    %64:array<u32, 2> = construct %62, %63
+    %65:f32 = call %f0_1, %64
+    %66:f32 = load %res_1
+    %67:f32 = add %66, %65
+    store %res_1, %67
+    %68:f32 = load %res_1
+    ret %68
+  }
+}
+%f2 = func(%p_indices_3:array<u32, 1>):f32 {  # %p_indices_3: 'p_indices'
+  $B6: {
+    %71:u32 = access %p_indices_3, 0u
+    %72:array<u32, 1> = construct %71
+    %73:f32 = call %f1_1, %72
+    ret %73
+  }
+}
+%f3 = func():f32 {
+  $B7: {
+    %three:i32 = let 3i
+    %76:u32 = convert %three
+    %77:array<u32, 1> = construct %76
+    %78:f32 = call %f2, %77
+    %79:f32 = call %f1
+    %80:f32 = add %78, %79
+    ret %80
+  }
+}
+%f4 = func():f32 {
+  $B8: {
+    %82:f32 = call %f3
+    ret %82
+  }
+}
+%b = @fragment func():void {
+  $B9: {
+    %84:f32 = call %f4
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_UniformAS, CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* input = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 input = b.Var("U", ty.ptr<uniform>(T));
+                 input->SetBindingPoint(0, 0);
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<uniform>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(),
+                 [&] { b.Return(f2, b.Load(b.Access<ptr<uniform, vec4<i32>>>(p, 3_u))); });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<uniform>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<uniform>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<uniform>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<uniform>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(f0, input);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 5>, 5>, 5>, read> = var @binding_point(0, 0)
+}
+
+%f2 = func(%p:ptr<uniform, array<vec4<i32>, 5>, read>):vec4<i32> {
+  $B2: {
+    %4:ptr<uniform, vec4<i32>, read> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<uniform, array<array<vec4<i32>, 5>, 5>, read>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %two:u32 = let 2u
+    %9:ptr<uniform, array<vec4<i32>, 5>, read> = access %p_1, %two
+    %10:vec4<i32> = call %f2, %9
+    ret %10
+  }
+}
+%f0 = func(%p_2:ptr<uniform, array<array<array<vec4<i32>, 5>, 5>, 5>, read>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %one:u32 = let 1u
+    %14:ptr<uniform, array<array<vec4<i32>, 5>, 5>, read> = access %p_2, %one
+    %15:vec4<i32> = call %f1, %14
+    ret %15
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %17:vec4<i32> = call %f0, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<uniform, array<array<array<vec4<i32>, 5>, 5>, 5>, read> = var @binding_point(0, 0)
+}
+
+%f2 = func(%p_indices:array<u32, 2>):vec4<i32> {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<uniform, array<vec4<i32>, 5>, read> = access %U, %4, %5
+    %7:ptr<uniform, vec4<i32>, read> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_indices_1:array<u32, 1>):vec4<i32> {  # %p_indices_1: 'p_indices'
+  $B3: {
+    %11:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %13:array<u32, 2> = construct %11, %two
+    %14:vec4<i32> = call %f2, %13
+    ret %14
+  }
+}
+%f0 = func():vec4<i32> {
+  $B4: {
+    %one:u32 = let 1u
+    %17:array<u32, 1> = construct %one
+    %18:vec4<i32> = call %f1, %17
+    ret %18
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %20:vec4<i32> = call %f0
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace uniform_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'immediate' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace immediate_as_tests {
+
+using IR_DirectVariableAccessTest_ImmediateAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_ImmediateAS, Param_ptr_i32_read) {
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<immediate, i32>("U");
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<immediate, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(fn_a, 10_i, U, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<immediate, i32, read> = var
+}
+
+%a = func(%pre:i32, %p:ptr<immediate, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:i32 = call %a, 10i, %U, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<immediate, i32, read> = var
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %5:i32 = load %U
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:i32 = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_ImmediateAS, Param_ptr_vec4i32_Via_array_DynamicRead) {
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<immediate, array<vec4<i32>, 8>>("U");
+             });
+
+    auto* fn_a = b.Function("a", ty.vec4i());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<immediate, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* I = b.Let("I", 3_i);
+        auto* access = b.Access(ty.ptr<immediate, vec4<i32>>(), U, I);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<immediate, array<vec4<i32>, 8>, read> = var
+}
+
+%a = func(%pre:i32, %p:ptr<immediate, vec4<i32>, read>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:vec4<i32> = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %9:ptr<immediate, vec4<i32>, read> = access %U, %I
+    %10:vec4<i32> = call %a, 10i, %9, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<immediate, array<vec4<i32>, 8>, read> = var
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 1>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<immediate, vec4<i32>, read> = access %U, %6
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %11:u32 = convert %I
+    %12:array<u32, 1> = construct %11
+    %13:vec4<i32> = call %a, 10i, %12, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_ImmediateAS, CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var("U", ty.ptr<immediate>(Outer));
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<immediate, vec4<f32>>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<immediate, mat3x4<f32>>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        auto* one = b.Let("one", 1_i);
+        auto* two = b.Let("two", 2_i);
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<immediate, vec4<f32>>(), fn_1_p, one));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<immediate, vec4<f32>>(), fn_1_p, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<immediate, vec4<f32>>(), U, 0_u, two, 0_u, one);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<immediate, vec4<f32>>(), U, 0_u, two, 0_u, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<immediate>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<immediate, mat3x4<f32>>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<immediate>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<immediate, mat3x4<f32>>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* three = b.Let("three", 3_i);
+        auto* p0_inner = b.Access(ty.ptr<immediate>(Inner), fn_3_p0, three);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<immediate>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<immediate>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<immediate, mat3x4<f32>>(), U, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, U);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %U:ptr<immediate, Outer, read> = var
+}
+
+%f0 = func(%p:ptr<immediate, vec4<f32>, read>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<immediate, mat3x4<f32>, read>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %10:ptr<immediate, vec4<f32>, read> = access %p_1, %one
+    %11:f32 = call %f0, %10
+    %12:f32 = load %res
+    %13:f32 = add %12, %11
+    store %res, %13
+    %p_vec:ptr<immediate, vec4<f32>, read> = access %p_1, %one
+    %15:f32 = call %f0, %p_vec
+    %16:f32 = load %res
+    %17:f32 = add %16, %15
+    store %res, %17
+    %18:ptr<immediate, vec4<f32>, read> = access %U, 0u, %two, 0u, %one
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %p_vec_1:ptr<immediate, vec4<f32>, read> = access %U, 0u, %two, 0u, %one  # %p_vec_1: 'p_vec'
+    %23:f32 = call %f0, %p_vec_1
+    %24:f32 = load %res
+    %25:f32 = add %24, %23
+    store %res, %25
+    %26:f32 = load %res
+    ret %26
+  }
+}
+%f2 = func(%p_2:ptr<immediate, Inner, read>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<immediate, mat3x4<f32>, read> = access %p_2, 0u
+    %30:f32 = call %f1, %p_mat
+    ret %30
+  }
+}
+%f3 = func(%p0:ptr<immediate, array<Inner, 4>, read>, %p1:ptr<immediate, mat3x4<f32>, read>):f32 {
+  $B5: {
+    %three:i32 = let 3i
+    %p0_inner:ptr<immediate, Inner, read> = access %p0, %three
+    %36:f32 = call %f2, %p0_inner
+    %37:f32 = call %f1, %p1
+    %38:f32 = add %36, %37
+    ret %38
+  }
+}
+%f4 = func(%p_3:ptr<immediate, Outer, read>):f32 {  # %p_3: 'p'
+  $B6: {
+    %41:ptr<immediate, array<Inner, 4>, read> = access %p_3, 0u
+    %42:ptr<immediate, mat3x4<f32>, read> = access %U, 1u
+    %43:f32 = call %f3, %41, %42
+    ret %43
+  }
+}
+%b = @fragment func():void {
+  $B7: {
+    %45:f32 = call %f4, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %U:ptr<immediate, Outer, read> = var
+}
+
+%f0 = func(%p_indices:array<u32, 1>):f32 {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<immediate, vec4<f32>, read> = access %U, 1u, %4
+    %6:f32 = load_vector_element %5, 0u
+    ret %6
+  }
+}
+%f0_1 = func(%p_indices_1:array<u32, 2>):f32 {  # %f0_1: 'f0', %p_indices_1: 'p_indices'
+  $B3: {
+    %9:u32 = access %p_indices_1, 0u
+    %10:u32 = access %p_indices_1, 1u
+    %11:ptr<immediate, vec4<f32>, read> = access %U, 0u, %9, 0u, %10
+    %12:f32 = load_vector_element %11, 0u
+    ret %12
+  }
+}
+%f1 = func():f32 {
+  $B4: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %17:u32 = convert %one
+    %18:array<u32, 1> = construct %17
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %22:u32 = convert %one
+    %23:array<u32, 1> = construct %22
+    %24:f32 = call %f0, %23
+    %25:f32 = load %res
+    %26:f32 = add %25, %24
+    store %res, %26
+    %27:u32 = convert %two
+    %28:u32 = convert %one
+    %29:array<u32, 2> = construct %27, %28
+    %30:f32 = call %f0_1, %29
+    %31:f32 = load %res
+    %32:f32 = add %31, %30
+    store %res, %32
+    %33:u32 = convert %two
+    %34:u32 = convert %one
+    %35:array<u32, 2> = construct %33, %34
+    %36:f32 = call %f0_1, %35
+    %37:f32 = load %res
+    %38:f32 = add %37, %36
+    store %res, %38
+    %39:f32 = load %res
+    ret %39
+  }
+}
+%f1_1 = func(%p_indices_2:array<u32, 1>):f32 {  # %f1_1: 'f1', %p_indices_2: 'p_indices'
+  $B5: {
+    %42:u32 = access %p_indices_2, 0u
+    %res_1:ptr<function, f32, read_write> = var  # %res_1: 'res'
+    %one_1:i32 = let 1i  # %one_1: 'one'
+    %two_1:i32 = let 2i  # %two_1: 'two'
+    %46:u32 = convert %one_1
+    %47:array<u32, 2> = construct %42, %46
+    %48:f32 = call %f0_1, %47
+    %49:f32 = load %res_1
+    %50:f32 = add %49, %48
+    store %res_1, %50
+    %51:u32 = convert %one_1
+    %52:array<u32, 2> = construct %42, %51
+    %53:f32 = call %f0_1, %52
+    %54:f32 = load %res_1
+    %55:f32 = add %54, %53
+    store %res_1, %55
+    %56:u32 = convert %two_1
+    %57:u32 = convert %one_1
+    %58:array<u32, 2> = construct %56, %57
+    %59:f32 = call %f0_1, %58
+    %60:f32 = load %res_1
+    %61:f32 = add %60, %59
+    store %res_1, %61
+    %62:u32 = convert %two_1
+    %63:u32 = convert %one_1
+    %64:array<u32, 2> = construct %62, %63
+    %65:f32 = call %f0_1, %64
+    %66:f32 = load %res_1
+    %67:f32 = add %66, %65
+    store %res_1, %67
+    %68:f32 = load %res_1
+    ret %68
+  }
+}
+%f2 = func(%p_indices_3:array<u32, 1>):f32 {  # %p_indices_3: 'p_indices'
+  $B6: {
+    %71:u32 = access %p_indices_3, 0u
+    %72:array<u32, 1> = construct %71
+    %73:f32 = call %f1_1, %72
+    ret %73
+  }
+}
+%f3 = func():f32 {
+  $B7: {
+    %three:i32 = let 3i
+    %76:u32 = convert %three
+    %77:array<u32, 1> = construct %76
+    %78:f32 = call %f2, %77
+    %79:f32 = call %f1
+    %80:f32 = add %78, %79
+    ret %80
+  }
+}
+%f4 = func():f32 {
+  $B8: {
+    %82:f32 = call %f3
+    ret %82
+  }
+}
+%b = @fragment func():void {
+  $B9: {
+    %84:f32 = call %f4
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_ImmediateAS, CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* input = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 input = b.Var("U", ty.ptr<immediate>(T));
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<immediate>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(),
+                 [&] { b.Return(f2, b.Load(b.Access<ptr<immediate, vec4<i32>>>(p, 3_u))); });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<immediate>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<immediate>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<immediate>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<immediate>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(f0, input);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<immediate, array<array<array<vec4<i32>, 5>, 5>, 5>, read> = var
+}
+
+%f2 = func(%p:ptr<immediate, array<vec4<i32>, 5>, read>):vec4<i32> {
+  $B2: {
+    %4:ptr<immediate, vec4<i32>, read> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<immediate, array<array<vec4<i32>, 5>, 5>, read>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %two:u32 = let 2u
+    %9:ptr<immediate, array<vec4<i32>, 5>, read> = access %p_1, %two
+    %10:vec4<i32> = call %f2, %9
+    ret %10
+  }
+}
+%f0 = func(%p_2:ptr<immediate, array<array<array<vec4<i32>, 5>, 5>, 5>, read>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %one:u32 = let 1u
+    %14:ptr<immediate, array<array<vec4<i32>, 5>, 5>, read> = access %p_2, %one
+    %15:vec4<i32> = call %f1, %14
+    ret %15
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %17:vec4<i32> = call %f0, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<immediate, array<array<array<vec4<i32>, 5>, 5>, 5>, read> = var
+}
+
+%f2 = func(%p_indices:array<u32, 2>):vec4<i32> {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<immediate, array<vec4<i32>, 5>, read> = access %U, %4, %5
+    %7:ptr<immediate, vec4<i32>, read> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_indices_1:array<u32, 1>):vec4<i32> {  # %p_indices_1: 'p_indices'
+  $B3: {
+    %11:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %13:array<u32, 2> = construct %11, %two
+    %14:vec4<i32> = call %f2, %13
+    ret %14
+  }
+}
+%f0 = func():vec4<i32> {
+  $B4: {
+    %one:u32 = let 1u
+    %17:array<u32, 1> = construct %one
+    %18:vec4<i32> = call %f1, %17
+    ret %18
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %20:vec4<i32> = call %f0
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace immediate_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'storage' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace storage_as_tests {
+
+using IR_DirectVariableAccessTest_StorageAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_StorageAS, Param_ptr_i32_Via_struct_read) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var("S", ty.ptr<storage, read>(str_));
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<storage, i32, read>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<storage, i32, read>(), S, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %S:ptr<storage, str, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<storage, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:ptr<storage, i32, read> = access %S, 0u
+    %9:i32 = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %S:ptr<storage, str, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %5:ptr<storage, i32, read> = access %S, 0u
+    %6:i32 = load %5
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:i32 = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_StorageAS, Param_ptr_arr_i32_Via_struct_write) {
+    auto* str_ =
+        ty.Struct(mod.symbols.New("str"), {
+                                              {mod.symbols.Register("arr"), ty.array<i32, 4>()},
+                                          });
+
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var("S", ty.ptr<storage>(str_));
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<storage, array<i32, 4>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<array<i32, 4>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<storage, array<i32, 4>>(), S, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %S:ptr<storage, str, read_write> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<storage, array<i32, 4>, read_write>, %post:i32):void {
+  $B2: {
+    store %p, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:ptr<storage, array<i32, 4>, read_write> = access %S, 0u
+    %8:void = call %a, 10i, %7, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %S:ptr<storage, str, read_write> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %post:i32):void {
+  $B2: {
+    %5:ptr<storage, array<i32, 4>, read_write> = access %S, 0u
+    store %5, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:void = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_StorageAS, Param_ptr_vec4i32_Via_array_DynamicWrite) {
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var<storage, array<vec4<i32>, 8>>("S");
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<storage, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<vec4<i32>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* I = b.Let("I", 3_i);
+        auto* access = b.Access(ty.ptr<storage, vec4<i32>>(), S, I);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %S:ptr<storage, array<vec4<i32>, 8>, read_write> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p:ptr<storage, vec4<i32>, read_write>, %post:i32):void {
+  $B2: {
+    store %p, vec4<i32>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %8:ptr<storage, vec4<i32>, read_write> = access %S, %I
+    %9:void = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %S:ptr<storage, array<vec4<i32>, 8>, read_write> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 1>, %post:i32):void {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<storage, vec4<i32>, read_write> = access %S, %6
+    store %7, vec4<i32>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %I:i32 = let 3i
+    %10:u32 = convert %I
+    %11:array<u32, 1> = construct %10
+    %12:void = call %a, 10i, %11, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_StorageAS, CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var("S", ty.ptr<storage, read>(Outer));
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<storage, vec4<f32>, read>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<storage, mat3x4<f32>, read>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        auto* one = b.Let("one", 1_i);
+        auto* two = b.Let("two", 2_i);
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<storage, vec4<f32>, read>(), fn_1_p, one));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<storage, vec4<f32>, read>(), fn_1_p, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<storage, vec4<f32>, read>(), S, 0_u, two, 0_u, one);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<storage, vec4<f32>, read>(), S, 0_u, two, 0_u, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<storage, read>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<storage, mat3x4<f32>, read>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<storage, read>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<storage, mat3x4<f32>, read>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* three = b.Let("three", 3_i);
+        auto* p0_inner = b.Access(ty.ptr<storage, read>(Inner), fn_3_p0, three);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<storage, read>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<storage, read>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<storage, mat3x4<f32>, read>(), S, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, S);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %S:ptr<storage, Outer, read> = var @binding_point(0, 0)
+}
+
+%f0 = func(%p:ptr<storage, vec4<f32>, read>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<storage, mat3x4<f32>, read>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %10:ptr<storage, vec4<f32>, read> = access %p_1, %one
+    %11:f32 = call %f0, %10
+    %12:f32 = load %res
+    %13:f32 = add %12, %11
+    store %res, %13
+    %p_vec:ptr<storage, vec4<f32>, read> = access %p_1, %one
+    %15:f32 = call %f0, %p_vec
+    %16:f32 = load %res
+    %17:f32 = add %16, %15
+    store %res, %17
+    %18:ptr<storage, vec4<f32>, read> = access %S, 0u, %two, 0u, %one
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %p_vec_1:ptr<storage, vec4<f32>, read> = access %S, 0u, %two, 0u, %one  # %p_vec_1: 'p_vec'
+    %23:f32 = call %f0, %p_vec_1
+    %24:f32 = load %res
+    %25:f32 = add %24, %23
+    store %res, %25
+    %26:f32 = load %res
+    ret %26
+  }
+}
+%f2 = func(%p_2:ptr<storage, Inner, read>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<storage, mat3x4<f32>, read> = access %p_2, 0u
+    %30:f32 = call %f1, %p_mat
+    ret %30
+  }
+}
+%f3 = func(%p0:ptr<storage, array<Inner, 4>, read>, %p1:ptr<storage, mat3x4<f32>, read>):f32 {
+  $B5: {
+    %three:i32 = let 3i
+    %p0_inner:ptr<storage, Inner, read> = access %p0, %three
+    %36:f32 = call %f2, %p0_inner
+    %37:f32 = call %f1, %p1
+    %38:f32 = add %36, %37
+    ret %38
+  }
+}
+%f4 = func(%p_3:ptr<storage, Outer, read>):f32 {  # %p_3: 'p'
+  $B6: {
+    %41:ptr<storage, array<Inner, 4>, read> = access %p_3, 0u
+    %42:ptr<storage, mat3x4<f32>, read> = access %S, 1u
+    %43:f32 = call %f3, %41, %42
+    ret %43
+  }
+}
+%b = @fragment func():void {
+  $B7: {
+    %45:f32 = call %f4, %S
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %S:ptr<storage, Outer, read> = var @binding_point(0, 0)
+}
+
+%f0 = func(%p_indices:array<u32, 1>):f32 {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<storage, vec4<f32>, read> = access %S, 1u, %4
+    %6:f32 = load_vector_element %5, 0u
+    ret %6
+  }
+}
+%f0_1 = func(%p_indices_1:array<u32, 2>):f32 {  # %f0_1: 'f0', %p_indices_1: 'p_indices'
+  $B3: {
+    %9:u32 = access %p_indices_1, 0u
+    %10:u32 = access %p_indices_1, 1u
+    %11:ptr<storage, vec4<f32>, read> = access %S, 0u, %9, 0u, %10
+    %12:f32 = load_vector_element %11, 0u
+    ret %12
+  }
+}
+%f1 = func():f32 {
+  $B4: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %17:u32 = convert %one
+    %18:array<u32, 1> = construct %17
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %22:u32 = convert %one
+    %23:array<u32, 1> = construct %22
+    %24:f32 = call %f0, %23
+    %25:f32 = load %res
+    %26:f32 = add %25, %24
+    store %res, %26
+    %27:u32 = convert %two
+    %28:u32 = convert %one
+    %29:array<u32, 2> = construct %27, %28
+    %30:f32 = call %f0_1, %29
+    %31:f32 = load %res
+    %32:f32 = add %31, %30
+    store %res, %32
+    %33:u32 = convert %two
+    %34:u32 = convert %one
+    %35:array<u32, 2> = construct %33, %34
+    %36:f32 = call %f0_1, %35
+    %37:f32 = load %res
+    %38:f32 = add %37, %36
+    store %res, %38
+    %39:f32 = load %res
+    ret %39
+  }
+}
+%f1_1 = func(%p_indices_2:array<u32, 1>):f32 {  # %f1_1: 'f1', %p_indices_2: 'p_indices'
+  $B5: {
+    %42:u32 = access %p_indices_2, 0u
+    %res_1:ptr<function, f32, read_write> = var  # %res_1: 'res'
+    %one_1:i32 = let 1i  # %one_1: 'one'
+    %two_1:i32 = let 2i  # %two_1: 'two'
+    %46:u32 = convert %one_1
+    %47:array<u32, 2> = construct %42, %46
+    %48:f32 = call %f0_1, %47
+    %49:f32 = load %res_1
+    %50:f32 = add %49, %48
+    store %res_1, %50
+    %51:u32 = convert %one_1
+    %52:array<u32, 2> = construct %42, %51
+    %53:f32 = call %f0_1, %52
+    %54:f32 = load %res_1
+    %55:f32 = add %54, %53
+    store %res_1, %55
+    %56:u32 = convert %two_1
+    %57:u32 = convert %one_1
+    %58:array<u32, 2> = construct %56, %57
+    %59:f32 = call %f0_1, %58
+    %60:f32 = load %res_1
+    %61:f32 = add %60, %59
+    store %res_1, %61
+    %62:u32 = convert %two_1
+    %63:u32 = convert %one_1
+    %64:array<u32, 2> = construct %62, %63
+    %65:f32 = call %f0_1, %64
+    %66:f32 = load %res_1
+    %67:f32 = add %66, %65
+    store %res_1, %67
+    %68:f32 = load %res_1
+    ret %68
+  }
+}
+%f2 = func(%p_indices_3:array<u32, 1>):f32 {  # %p_indices_3: 'p_indices'
+  $B6: {
+    %71:u32 = access %p_indices_3, 0u
+    %72:array<u32, 1> = construct %71
+    %73:f32 = call %f1_1, %72
+    ret %73
+  }
+}
+%f3 = func():f32 {
+  $B7: {
+    %three:i32 = let 3i
+    %76:u32 = convert %three
+    %77:array<u32, 1> = construct %76
+    %78:f32 = call %f2, %77
+    %79:f32 = call %f1
+    %80:f32 = add %78, %79
+    ret %80
+  }
+}
+%f4 = func():f32 {
+  $B8: {
+    %82:f32 = call %f3
+    ret %82
+  }
+}
+%b = @fragment func():void {
+  $B9: {
+    %84:f32 = call %f4
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_StorageAS, CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* input = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 input = b.Var("U", ty.ptr<storage>(T));
+                 input->SetBindingPoint(0, 0);
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<storage>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(),
+                 [&] { b.Return(f2, b.Load(b.Access<ptr<storage, vec4<i32>>>(p, 3_u))); });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<storage>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<storage>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<storage>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<storage>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(f0, input);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<storage, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var @binding_point(0, 0)
+}
+
+%f2 = func(%p:ptr<storage, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B2: {
+    %4:ptr<storage, vec4<i32>, read_write> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<storage, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %two:u32 = let 2u
+    %9:ptr<storage, array<vec4<i32>, 5>, read_write> = access %p_1, %two
+    %10:vec4<i32> = call %f2, %9
+    ret %10
+  }
+}
+%f0 = func(%p_2:ptr<storage, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %one:u32 = let 1u
+    %14:ptr<storage, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, %one
+    %15:vec4<i32> = call %f1, %14
+    ret %15
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %17:vec4<i32> = call %f0, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<storage, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var @binding_point(0, 0)
+}
+
+%f2 = func(%p_indices:array<u32, 2>):vec4<i32> {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<storage, array<vec4<i32>, 5>, read_write> = access %U, %4, %5
+    %7:ptr<storage, vec4<i32>, read_write> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_indices_1:array<u32, 1>):vec4<i32> {  # %p_indices_1: 'p_indices'
+  $B3: {
+    %11:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %13:array<u32, 2> = construct %11, %two
+    %14:vec4<i32> = call %f2, %13
+    ret %14
+  }
+}
+%f0 = func():vec4<i32> {
+  $B4: {
+    %one:u32 = let 1u
+    %17:array<u32, 1> = construct %one
+    %18:vec4<i32> = call %f1, %17
+    ret %18
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %20:vec4<i32> = call %f0
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace storage_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'workgroup' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace workgroup_as_tests {
+
+using IR_DirectVariableAccessTest_WorkgroupAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_WorkgroupAS, Param_ptr_vec4i32_Via_array_StaticRead) {
+    Var* W = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 W = b.Var("W", ty.ptr<workgroup, array<vec4<i32>, 8>>());
+             });
+
+    auto* fn_a = b.Function("a", ty.vec4i());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<workgroup, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.ComputeFunction("b");
+    b.Append(fn_b->Block(), [&] {
+        auto* idx = b.Let("idx", 3_i);
+        auto* access = b.Access(ty.ptr<workgroup, vec4<i32>>(), W, idx);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %W:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<workgroup, vec4<i32>, read_write>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:vec4<i32> = load %p
+    ret %6
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %idx:i32 = let 3i
+    %9:ptr<workgroup, vec4<i32>, read_write> = access %W, %idx
+    %10:vec4<i32> = call %a, 10i, %9, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %W:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 1>, %post:i32):vec4<i32> {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<workgroup, vec4<i32>, read_write> = access %W, %6
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %idx:i32 = let 3i
+    %11:u32 = convert %idx
+    %12:array<u32, 1> = construct %11
+    %13:vec4<i32> = call %a, 10i, %12, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_WorkgroupAS, Param_ptr_vec4i32_Via_array_StaticWrite) {
+    Var* W = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 W = b.Var<workgroup, array<vec4<i32>, 8>>("W");
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<workgroup, vec4<i32>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<vec4<i32>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.ComputeFunction("b");
+    b.Append(fn_b->Block(), [&] {
+        auto* idx = b.Let("idx", 3_i);
+        auto* access = b.Access(ty.ptr<workgroup, vec4<i32>>(), W, idx);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %W:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<workgroup, vec4<i32>, read_write>, %post:i32):void {
+  $B2: {
+    store %p, vec4<i32>(0i)
+    ret
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %idx:i32 = let 3i
+    %8:ptr<workgroup, vec4<i32>, read_write> = access %W, %idx
+    %9:void = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %W:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+}
+
+%a = func(%pre:i32, %p_indices:array<u32, 1>, %post:i32):void {
+  $B2: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<workgroup, vec4<i32>, read_write> = access %W, %6
+    store %7, vec4<i32>(0i)
+    ret
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %idx:i32 = let 3i
+    %10:u32 = convert %idx
+    %11:array<u32, 1> = construct %10
+    %12:void = call %a, 10i, %11, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_WorkgroupAS, CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* W = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 W = b.Var("W", ty.ptr<workgroup>(Outer));
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<workgroup, vec4<f32>>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<workgroup, mat3x4<f32>>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        auto* one = b.Let("one", 1_i);
+        auto* two = b.Let("two", 2_i);
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<workgroup, vec4<f32>>(), fn_1_p, one));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<workgroup, vec4<f32>>(), fn_1_p, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<workgroup, vec4<f32>>(), W, 0_u, two, 0_u, one);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<workgroup, vec4<f32>>(), W, 0_u, two, 0_u, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<workgroup>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<workgroup, mat3x4<f32>>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<workgroup>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<workgroup, mat3x4<f32>>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* three = b.Let("three", 3_i);
+        auto* p0_inner = b.Access(ty.ptr<workgroup>(Inner), fn_3_p0, three);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<workgroup>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<workgroup>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<workgroup, mat3x4<f32>>(), W, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.ComputeFunction("b");
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, W);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %W:ptr<workgroup, Outer, read_write> = var
+}
+
+%f0 = func(%p:ptr<workgroup, vec4<f32>, read_write>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<workgroup, mat3x4<f32>, read_write>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %10:ptr<workgroup, vec4<f32>, read_write> = access %p_1, %one
+    %11:f32 = call %f0, %10
+    %12:f32 = load %res
+    %13:f32 = add %12, %11
+    store %res, %13
+    %p_vec:ptr<workgroup, vec4<f32>, read_write> = access %p_1, %one
+    %15:f32 = call %f0, %p_vec
+    %16:f32 = load %res
+    %17:f32 = add %16, %15
+    store %res, %17
+    %18:ptr<workgroup, vec4<f32>, read_write> = access %W, 0u, %two, 0u, %one
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %p_vec_1:ptr<workgroup, vec4<f32>, read_write> = access %W, 0u, %two, 0u, %one  # %p_vec_1: 'p_vec'
+    %23:f32 = call %f0, %p_vec_1
+    %24:f32 = load %res
+    %25:f32 = add %24, %23
+    store %res, %25
+    %26:f32 = load %res
+    ret %26
+  }
+}
+%f2 = func(%p_2:ptr<workgroup, Inner, read_write>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<workgroup, mat3x4<f32>, read_write> = access %p_2, 0u
+    %30:f32 = call %f1, %p_mat
+    ret %30
+  }
+}
+%f3 = func(%p0:ptr<workgroup, array<Inner, 4>, read_write>, %p1:ptr<workgroup, mat3x4<f32>, read_write>):f32 {
+  $B5: {
+    %three:i32 = let 3i
+    %p0_inner:ptr<workgroup, Inner, read_write> = access %p0, %three
+    %36:f32 = call %f2, %p0_inner
+    %37:f32 = call %f1, %p1
+    %38:f32 = add %36, %37
+    ret %38
+  }
+}
+%f4 = func(%p_3:ptr<workgroup, Outer, read_write>):f32 {  # %p_3: 'p'
+  $B6: {
+    %41:ptr<workgroup, array<Inner, 4>, read_write> = access %p_3, 0u
+    %42:ptr<workgroup, mat3x4<f32>, read_write> = access %W, 1u
+    %43:f32 = call %f3, %41, %42
+    ret %43
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B7: {
+    %45:f32 = call %f4, %W
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %W:ptr<workgroup, Outer, read_write> = var
+}
+
+%f0 = func(%p_indices:array<u32, 1>):f32 {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<workgroup, vec4<f32>, read_write> = access %W, 1u, %4
+    %6:f32 = load_vector_element %5, 0u
+    ret %6
+  }
+}
+%f0_1 = func(%p_indices_1:array<u32, 2>):f32 {  # %f0_1: 'f0', %p_indices_1: 'p_indices'
+  $B3: {
+    %9:u32 = access %p_indices_1, 0u
+    %10:u32 = access %p_indices_1, 1u
+    %11:ptr<workgroup, vec4<f32>, read_write> = access %W, 0u, %9, 0u, %10
+    %12:f32 = load_vector_element %11, 0u
+    ret %12
+  }
+}
+%f1 = func():f32 {
+  $B4: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %17:u32 = convert %one
+    %18:array<u32, 1> = construct %17
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %22:u32 = convert %one
+    %23:array<u32, 1> = construct %22
+    %24:f32 = call %f0, %23
+    %25:f32 = load %res
+    %26:f32 = add %25, %24
+    store %res, %26
+    %27:u32 = convert %two
+    %28:u32 = convert %one
+    %29:array<u32, 2> = construct %27, %28
+    %30:f32 = call %f0_1, %29
+    %31:f32 = load %res
+    %32:f32 = add %31, %30
+    store %res, %32
+    %33:u32 = convert %two
+    %34:u32 = convert %one
+    %35:array<u32, 2> = construct %33, %34
+    %36:f32 = call %f0_1, %35
+    %37:f32 = load %res
+    %38:f32 = add %37, %36
+    store %res, %38
+    %39:f32 = load %res
+    ret %39
+  }
+}
+%f1_1 = func(%p_indices_2:array<u32, 1>):f32 {  # %f1_1: 'f1', %p_indices_2: 'p_indices'
+  $B5: {
+    %42:u32 = access %p_indices_2, 0u
+    %res_1:ptr<function, f32, read_write> = var  # %res_1: 'res'
+    %one_1:i32 = let 1i  # %one_1: 'one'
+    %two_1:i32 = let 2i  # %two_1: 'two'
+    %46:u32 = convert %one_1
+    %47:array<u32, 2> = construct %42, %46
+    %48:f32 = call %f0_1, %47
+    %49:f32 = load %res_1
+    %50:f32 = add %49, %48
+    store %res_1, %50
+    %51:u32 = convert %one_1
+    %52:array<u32, 2> = construct %42, %51
+    %53:f32 = call %f0_1, %52
+    %54:f32 = load %res_1
+    %55:f32 = add %54, %53
+    store %res_1, %55
+    %56:u32 = convert %two_1
+    %57:u32 = convert %one_1
+    %58:array<u32, 2> = construct %56, %57
+    %59:f32 = call %f0_1, %58
+    %60:f32 = load %res_1
+    %61:f32 = add %60, %59
+    store %res_1, %61
+    %62:u32 = convert %two_1
+    %63:u32 = convert %one_1
+    %64:array<u32, 2> = construct %62, %63
+    %65:f32 = call %f0_1, %64
+    %66:f32 = load %res_1
+    %67:f32 = add %66, %65
+    store %res_1, %67
+    %68:f32 = load %res_1
+    ret %68
+  }
+}
+%f2 = func(%p_indices_3:array<u32, 1>):f32 {  # %p_indices_3: 'p_indices'
+  $B6: {
+    %71:u32 = access %p_indices_3, 0u
+    %72:array<u32, 1> = construct %71
+    %73:f32 = call %f1_1, %72
+    ret %73
+  }
+}
+%f3 = func():f32 {
+  $B7: {
+    %three:i32 = let 3i
+    %76:u32 = convert %three
+    %77:array<u32, 1> = construct %76
+    %78:f32 = call %f2, %77
+    %79:f32 = call %f1
+    %80:f32 = add %78, %79
+    ret %80
+  }
+}
+%f4 = func():f32 {
+  $B8: {
+    %82:f32 = call %f3
+    ret %82
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B9: {
+    %84:f32 = call %f4
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_WorkgroupAS, CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* input = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 input = b.Var("U", ty.ptr<workgroup>(T));
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<workgroup>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(),
+                 [&] { b.Return(f2, b.Load(b.Access<ptr<workgroup, vec4<i32>>>(p, 3_u))); });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<workgroup>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<workgroup>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<workgroup>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<workgroup>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(f0, input);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %U:ptr<workgroup, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+}
+
+%f2 = func(%p:ptr<workgroup, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B2: {
+    %4:ptr<workgroup, vec4<i32>, read_write> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<workgroup, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %two:u32 = let 2u
+    %9:ptr<workgroup, array<vec4<i32>, 5>, read_write> = access %p_1, %two
+    %10:vec4<i32> = call %f2, %9
+    ret %10
+  }
+}
+%f0 = func(%p_2:ptr<workgroup, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %one:u32 = let 1u
+    %14:ptr<workgroup, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, %one
+    %15:vec4<i32> = call %f1, %14
+    ret %15
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %17:vec4<i32> = call %f0, %U
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %U:ptr<workgroup, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+}
+
+%f2 = func(%p_indices:array<u32, 2>):vec4<i32> {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<workgroup, array<vec4<i32>, 5>, read_write> = access %U, %4, %5
+    %7:ptr<workgroup, vec4<i32>, read_write> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_indices_1:array<u32, 1>):vec4<i32> {  # %p_indices_1: 'p_indices'
+  $B3: {
+    %11:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %13:array<u32, 2> = construct %11, %two
+    %14:vec4<i32> = call %f2, %13
+    ret %14
+  }
+}
+%f0 = func():vec4<i32> {
+  $B4: {
+    %one:u32 = let 1u
+    %17:array<u32, 1> = construct %one
+    %18:vec4<i32> = call %f1, %17
+    ret %18
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %20:vec4<i32> = call %f0
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace workgroup_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'private' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace private_as_tests {
+
+using IR_DirectVariableAccessTest_PrivateAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_Param_ptr_i32_read) {
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_, i32>());
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(fn_a, 10_i, P, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %P:ptr<private, i32, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:i32 = call %a, 10i, %P, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %P:ptr<private, i32, read_write> = var
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %5:i32 = load %P
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:i32 = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_Param_ptr_i32_write) {
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_, i32>());
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, 42_i);
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(fn_a, 10_i, P, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %P:ptr<private, i32, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):void {
+  $B2: {
+    store %p, 42i
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:void = call %a, 10i, %P, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %P:ptr<private, i32, read_write> = var
+}
+
+%a = func(%pre:i32, %post:i32):void {
+  $B2: {
+    store %P, 42i
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %6:void = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_Param_ptr_i32_Via_struct_read) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(str_));
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<private_, i32>(), P, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:ptr<private, i32, read_write> = access %P, 0u
+    %9:i32 = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %5:ptr<private, i32, read_write> = access %P, 0u
+    %6:i32 = load %5
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:i32 = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Disabled_Param_ptr_i32_Via_struct_read) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(str_));
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<private_, i32>(), P, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %p
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %8:ptr<private, i32, read_write> = access %P, 0u
+    %9:i32 = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_Param_ptr_arr_i32_Via_struct_write) {
+    auto* str_ =
+        ty.Struct(mod.symbols.New("str"), {
+                                              {mod.symbols.Register("arr"), ty.array<i32, 4>()},
+                                          });
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(str_));
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, array<i32, 4>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<array<i32, 4>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<private_, array<i32, 4>>(), P, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, array<i32, 4>, read_write>, %post:i32):void {
+  $B2: {
+    store %p, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:ptr<private, array<i32, 4>, read_write> = access %P, 0u
+    %8:void = call %a, 10i, %7, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %post:i32):void {
+  $B2: {
+    %5:ptr<private, array<i32, 4>, read_write> = access %P, 0u
+    store %5, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:void = call %a, 10i, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Disabled_Param_ptr_arr_i32_Via_struct_write) {
+    auto* str_ =
+        ty.Struct(mod.symbols.New("str"), {
+                                              {mod.symbols.Register("arr"), ty.array<i32, 4>()},
+                                          });
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(str_));
+             });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, array<i32, 4>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<array<i32, 4>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* access = b.Access(ty.ptr<private_, array<i32, 4>>(), P, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %P:ptr<private, str, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, array<i32, 4>, read_write>, %post:i32):void {
+  $B2: {
+    store %p, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %7:ptr<private, array<i32, 4>, read_write> = access %P, 0u
+    %8:void = call %a, 10i, %7, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_Param_ptr_i32_mixed) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    Var* Pi = nullptr;
+    Var* Ps = nullptr;
+    Var* Pa = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 Pi = b.Var("Pi", ty.ptr<private_, i32>());
+                 Ps = b.Var("Ps", ty.ptr<private_>(str_));
+                 Pa = b.Var("Pa", ty.ptr<private_, array<i32, 4>>());
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        {  // a(10, &Pi, 20);
+            b.Call(fn_a, 10_i, Pi, 20_i);
+        }
+        {  // a(30, &Ps.i, 40);
+            auto* access = b.Access(ty.ptr<private_, i32>(), Ps, 0_u);
+            b.Call(fn_a, 30_i, access, 40_i);
+        }
+        {  // a(50, &Pa[2], 60);
+            auto* two = b.Let("two", 2_i);
+            auto* access = b.Access(ty.ptr<private_, i32>(), Pa, two);
+            b.Call(fn_a, 50_i, access, 60_i);
+        }
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %Pi:ptr<private, i32, read_write> = var
+  %Ps:ptr<private, str, read_write> = var
+  %Pa:ptr<private, array<i32, 4>, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %8:i32 = load %p
+    ret %8
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %10:i32 = call %a, 10i, %Pi, 20i
+    %11:ptr<private, i32, read_write> = access %Ps, 0u
+    %12:i32 = call %a, 30i, %11, 40i
+    %two:i32 = let 2i
+    %14:ptr<private, i32, read_write> = access %Pa, %two
+    %15:i32 = call %a, 50i, %14, 60i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %Pi:ptr<private, i32, read_write> = var
+  %Ps:ptr<private, str, read_write> = var
+  %Pa:ptr<private, array<i32, 4>, read_write> = var
+}
+
+%a = func(%pre:i32, %post:i32):i32 {
+  $B2: {
+    %7:i32 = load %Pi
+    ret %7
+  }
+}
+%a_1 = func(%pre_1:i32, %post_1:i32):i32 {  # %a_1: 'a', %pre_1: 'pre', %post_1: 'post'
+  $B3: {
+    %11:ptr<private, i32, read_write> = access %Ps, 0u
+    %12:i32 = load %11
+    ret %12
+  }
+}
+%a_2 = func(%pre_2:i32, %p_indices:array<u32, 1>, %post_2:i32):i32 {  # %a_2: 'a', %pre_2: 'pre', %post_2: 'post'
+  $B4: {
+    %17:u32 = access %p_indices, 0u
+    %18:ptr<private, i32, read_write> = access %Pa, %17
+    %19:i32 = load %18
+    ret %19
+  }
+}
+%b = @fragment func():void {
+  $B5: {
+    %21:i32 = call %a, 10i, 20i
+    %22:i32 = call %a_1, 30i, 40i
+    %two:i32 = let 2i
+    %24:u32 = convert %two
+    %25:array<u32, 1> = construct %24
+    %26:i32 = call %a_2, 50i, %25, 60i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Disabled_Param_ptr_i32_mixed) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    Var* Pi = nullptr;
+    Var* Ps = nullptr;
+    Var* Pa = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 Pi = b.Var("Pi", ty.ptr<private_, i32>());
+                 Ps = b.Var("Ps", ty.ptr<private_>(str_));
+                 Pa = b.Var("Pa", ty.ptr<private_, array<i32, 4>>());
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<private_, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        {  // a(10, &Pi, 20);
+            b.Call(fn_a, 10_i, Pi, 20_i);
+        }
+        {  // a(30, &Ps.i, 40);
+            auto* access = b.Access(ty.ptr<private_, i32>(), Ps, 0_u);
+            b.Call(fn_a, 30_i, access, 40_i);
+        }
+        {  // a(50, &Pa[2], 60);
+            auto* access = b.Access(ty.ptr<private_, i32>(), Pa, 2_i);
+            b.Call(fn_a, 50_i, access, 60_i);
+        }
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+$B1: {  # root
+  %Pi:ptr<private, i32, read_write> = var
+  %Ps:ptr<private, str, read_write> = var
+  %Pa:ptr<private, array<i32, 4>, read_write> = var
+}
+
+%a = func(%pre:i32, %p:ptr<private, i32, read_write>, %post:i32):i32 {
+  $B2: {
+    %8:i32 = load %p
+    ret %8
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %10:i32 = call %a, 10i, %Pi, 20i
+    %11:ptr<private, i32, read_write> = access %Ps, 0u
+    %12:i32 = call %a, 30i, %11, 40i
+    %13:ptr<private, i32, read_write> = access %Pa, 2i
+    %14:i32 = call %a, 50i, %13, 60i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(Outer));
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<private_, vec4<f32>>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<private_, mat3x4<f32>>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        auto* one = b.Let("one", 1_i);
+        auto* two = b.Let("two", 2_i);
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<private_, vec4<f32>>(), fn_1_p, one));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<private_, vec4<f32>>(), fn_1_p, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<private_, vec4<f32>>(), P, 0_u, two, 0_u, one);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<private_, vec4<f32>>(), P, 0_u, two, 0_u, one);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<private_>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<private_, mat3x4<f32>>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<private_>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<private_, mat3x4<f32>>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* three = b.Let("three", 3_i);
+        auto* p0_inner = b.Access(ty.ptr<private_>(Inner), fn_3_p0, three);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<private_>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<private_>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<private_, mat3x4<f32>>(), P, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, P);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %P:ptr<private, Outer, read_write> = var
+}
+
+%f0 = func(%p:ptr<private, vec4<f32>, read_write>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<private, mat3x4<f32>, read_write>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %10:ptr<private, vec4<f32>, read_write> = access %p_1, %one
+    %11:f32 = call %f0, %10
+    %12:f32 = load %res
+    %13:f32 = add %12, %11
+    store %res, %13
+    %p_vec:ptr<private, vec4<f32>, read_write> = access %p_1, %one
+    %15:f32 = call %f0, %p_vec
+    %16:f32 = load %res
+    %17:f32 = add %16, %15
+    store %res, %17
+    %18:ptr<private, vec4<f32>, read_write> = access %P, 0u, %two, 0u, %one
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %p_vec_1:ptr<private, vec4<f32>, read_write> = access %P, 0u, %two, 0u, %one  # %p_vec_1: 'p_vec'
+    %23:f32 = call %f0, %p_vec_1
+    %24:f32 = load %res
+    %25:f32 = add %24, %23
+    store %res, %25
+    %26:f32 = load %res
+    ret %26
+  }
+}
+%f2 = func(%p_2:ptr<private, Inner, read_write>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<private, mat3x4<f32>, read_write> = access %p_2, 0u
+    %30:f32 = call %f1, %p_mat
+    ret %30
+  }
+}
+%f3 = func(%p0:ptr<private, array<Inner, 4>, read_write>, %p1:ptr<private, mat3x4<f32>, read_write>):f32 {
+  $B5: {
+    %three:i32 = let 3i
+    %p0_inner:ptr<private, Inner, read_write> = access %p0, %three
+    %36:f32 = call %f2, %p0_inner
+    %37:f32 = call %f1, %p1
+    %38:f32 = add %36, %37
+    ret %38
+  }
+}
+%f4 = func(%p_3:ptr<private, Outer, read_write>):f32 {  # %p_3: 'p'
+  $B6: {
+    %41:ptr<private, array<Inner, 4>, read_write> = access %p_3, 0u
+    %42:ptr<private, mat3x4<f32>, read_write> = access %P, 1u
+    %43:f32 = call %f3, %41, %42
+    ret %43
+  }
+}
+%b = @fragment func():void {
+  $B7: {
+    %45:f32 = call %f4, %P
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %P:ptr<private, Outer, read_write> = var
+}
+
+%f0 = func(%p_indices:array<u32, 1>):f32 {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<private, vec4<f32>, read_write> = access %P, 1u, %4
+    %6:f32 = load_vector_element %5, 0u
+    ret %6
+  }
+}
+%f0_1 = func(%p_indices_1:array<u32, 2>):f32 {  # %f0_1: 'f0', %p_indices_1: 'p_indices'
+  $B3: {
+    %9:u32 = access %p_indices_1, 0u
+    %10:u32 = access %p_indices_1, 1u
+    %11:ptr<private, vec4<f32>, read_write> = access %P, 0u, %9, 0u, %10
+    %12:f32 = load_vector_element %11, 0u
+    ret %12
+  }
+}
+%f1 = func():f32 {
+  $B4: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %two:i32 = let 2i
+    %17:u32 = convert %one
+    %18:array<u32, 1> = construct %17
+    %19:f32 = call %f0, %18
+    %20:f32 = load %res
+    %21:f32 = add %20, %19
+    store %res, %21
+    %22:u32 = convert %one
+    %23:array<u32, 1> = construct %22
+    %24:f32 = call %f0, %23
+    %25:f32 = load %res
+    %26:f32 = add %25, %24
+    store %res, %26
+    %27:u32 = convert %two
+    %28:u32 = convert %one
+    %29:array<u32, 2> = construct %27, %28
+    %30:f32 = call %f0_1, %29
+    %31:f32 = load %res
+    %32:f32 = add %31, %30
+    store %res, %32
+    %33:u32 = convert %two
+    %34:u32 = convert %one
+    %35:array<u32, 2> = construct %33, %34
+    %36:f32 = call %f0_1, %35
+    %37:f32 = load %res
+    %38:f32 = add %37, %36
+    store %res, %38
+    %39:f32 = load %res
+    ret %39
+  }
+}
+%f1_1 = func(%p_indices_2:array<u32, 1>):f32 {  # %f1_1: 'f1', %p_indices_2: 'p_indices'
+  $B5: {
+    %42:u32 = access %p_indices_2, 0u
+    %res_1:ptr<function, f32, read_write> = var  # %res_1: 'res'
+    %one_1:i32 = let 1i  # %one_1: 'one'
+    %two_1:i32 = let 2i  # %two_1: 'two'
+    %46:u32 = convert %one_1
+    %47:array<u32, 2> = construct %42, %46
+    %48:f32 = call %f0_1, %47
+    %49:f32 = load %res_1
+    %50:f32 = add %49, %48
+    store %res_1, %50
+    %51:u32 = convert %one_1
+    %52:array<u32, 2> = construct %42, %51
+    %53:f32 = call %f0_1, %52
+    %54:f32 = load %res_1
+    %55:f32 = add %54, %53
+    store %res_1, %55
+    %56:u32 = convert %two_1
+    %57:u32 = convert %one_1
+    %58:array<u32, 2> = construct %56, %57
+    %59:f32 = call %f0_1, %58
+    %60:f32 = load %res_1
+    %61:f32 = add %60, %59
+    store %res_1, %61
+    %62:u32 = convert %two_1
+    %63:u32 = convert %one_1
+    %64:array<u32, 2> = construct %62, %63
+    %65:f32 = call %f0_1, %64
+    %66:f32 = load %res_1
+    %67:f32 = add %66, %65
+    store %res_1, %67
+    %68:f32 = load %res_1
+    ret %68
+  }
+}
+%f2 = func(%p_indices_3:array<u32, 1>):f32 {  # %p_indices_3: 'p_indices'
+  $B6: {
+    %71:u32 = access %p_indices_3, 0u
+    %72:array<u32, 1> = construct %71
+    %73:f32 = call %f1_1, %72
+    ret %73
+  }
+}
+%f3 = func():f32 {
+  $B7: {
+    %three:i32 = let 3i
+    %76:u32 = convert %three
+    %77:array<u32, 1> = construct %76
+    %78:f32 = call %f2, %77
+    %79:f32 = call %f1
+    %80:f32 = add %78, %79
+    ret %80
+  }
+}
+%f4 = func():f32 {
+  $B8: {
+    %82:f32 = call %f3
+    ret %82
+  }
+}
+%b = @fragment func():void {
+  $B9: {
+    %84:f32 = call %f4
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Disabled_CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(Outer));
+             });
+
+    auto* fn_0 = b.Function("f0", ty.f32());
+    auto* fn_0_p = b.FunctionParam("p", ty.ptr<private_, vec4<f32>>());
+    fn_0->SetParams({fn_0_p});
+    b.Append(fn_0->Block(), [&] { b.Return(fn_0, b.LoadVectorElement(fn_0_p, 0_u)); });
+
+    auto* fn_1 = b.Function("f1", ty.f32());
+    auto* fn_1_p = b.FunctionParam("p", ty.ptr<private_, mat3x4<f32>>());
+    fn_1->SetParams({fn_1_p});
+    b.Append(fn_1->Block(), [&] {
+        auto* res = b.Var<function, f32>("res");
+        {
+            // res += f0(&(*p)[1]);
+            auto* call_0 = b.Call(fn_0, b.Access(ty.ptr<private_, vec4<f32>>(), fn_1_p, 1_i));
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &(*p)[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<private_, vec4<f32>>(), fn_1_p, 1_i);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // res += f0(&U.arr[2].mat[1]);
+            auto* access = b.Access(ty.ptr<private_, vec4<f32>>(), P, 0_u, 2_i, 0_u, 1_i);
+            auto* call_0 = b.Call(fn_0, access);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+        {
+            // let p_vec = &U.arr[2].mat[1];
+            // res += f0(p_vec);
+            auto* p_vec = b.Access(ty.ptr<private_, vec4<f32>>(), P, 0_u, 2_i, 0_u, 1_i);
+            b.ir.SetName(p_vec, "p_vec");
+            auto* call_0 = b.Call(fn_0, p_vec);
+            b.Store(res, b.Add(b.Load(res), call_0));
+        }
+
+        b.Return(fn_1, b.Load(res));
+    });
+
+    auto* fn_2 = b.Function("f2", ty.f32());
+    auto* fn_2_p = b.FunctionParam("p", ty.ptr<private_>(Inner));
+    fn_2->SetParams({fn_2_p});
+    b.Append(fn_2->Block(), [&] {
+        auto* p_mat = b.Access(ty.ptr<private_, mat3x4<f32>>(), fn_2_p, 0_u);
+        b.ir.SetName(p_mat, "p_mat");
+        b.Return(fn_2, b.Call(fn_1, p_mat));
+    });
+
+    auto* fn_3 = b.Function("f3", ty.f32());
+    auto* fn_3_p0 = b.FunctionParam("p0", ty.ptr<private_>(ty.array(Inner, 4)));
+    auto* fn_3_p1 = b.FunctionParam("p1", ty.ptr<private_, mat3x4<f32>>());
+    fn_3->SetParams({fn_3_p0, fn_3_p1});
+    b.Append(fn_3->Block(), [&] {
+        auto* p0_inner = b.Access(ty.ptr<private_>(Inner), fn_3_p0, 3_i);
+        b.ir.SetName(p0_inner, "p0_inner");
+        auto* call_0 = b.Call(ty.f32(), fn_2, p0_inner);
+        auto* call_1 = b.Call(ty.f32(), fn_1, fn_3_p1);
+        b.Return(fn_3, b.Add(call_0, call_1));
+    });
+
+    auto* fn_4 = b.Function("f4", ty.f32());
+    auto* fn_4_p = b.FunctionParam("p", ty.ptr<private_>(Outer));
+    fn_4->SetParams({fn_4_p});
+    b.Append(fn_4->Block(), [&] {
+        auto* access_0 = b.Access(ty.ptr<private_>(ty.array(Inner, 4)), fn_4_p, 0_u);
+        auto* access_1 = b.Access(ty.ptr<private_, mat3x4<f32>>(), P, 1_u);
+        b.Return(fn_4, b.Call(ty.f32(), fn_3, access_0, access_1));
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        b.Call(ty.f32(), fn_4, P);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+$B1: {  # root
+  %P:ptr<private, Outer, read_write> = var
+}
+
+%f0 = func(%p:ptr<private, vec4<f32>, read_write>):f32 {
+  $B2: {
+    %4:f32 = load_vector_element %p, 0u
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<private, mat3x4<f32>, read_write>):f32 {  # %p_1: 'p'
+  $B3: {
+    %res:ptr<function, f32, read_write> = var
+    %8:ptr<private, vec4<f32>, read_write> = access %p_1, 1i
+    %9:f32 = call %f0, %8
+    %10:f32 = load %res
+    %11:f32 = add %10, %9
+    store %res, %11
+    %p_vec:ptr<private, vec4<f32>, read_write> = access %p_1, 1i
+    %13:f32 = call %f0, %p_vec
+    %14:f32 = load %res
+    %15:f32 = add %14, %13
+    store %res, %15
+    %16:ptr<private, vec4<f32>, read_write> = access %P, 0u, 2i, 0u, 1i
+    %17:f32 = call %f0, %16
+    %18:f32 = load %res
+    %19:f32 = add %18, %17
+    store %res, %19
+    %p_vec_1:ptr<private, vec4<f32>, read_write> = access %P, 0u, 2i, 0u, 1i  # %p_vec_1: 'p_vec'
+    %21:f32 = call %f0, %p_vec_1
+    %22:f32 = load %res
+    %23:f32 = add %22, %21
+    store %res, %23
+    %24:f32 = load %res
+    ret %24
+  }
+}
+%f2 = func(%p_2:ptr<private, Inner, read_write>):f32 {  # %p_2: 'p'
+  $B4: {
+    %p_mat:ptr<private, mat3x4<f32>, read_write> = access %p_2, 0u
+    %28:f32 = call %f1, %p_mat
+    ret %28
+  }
+}
+%f3 = func(%p0:ptr<private, array<Inner, 4>, read_write>, %p1:ptr<private, mat3x4<f32>, read_write>):f32 {
+  $B5: {
+    %p0_inner:ptr<private, Inner, read_write> = access %p0, 3i
+    %33:f32 = call %f2, %p0_inner
+    %34:f32 = call %f1, %p1
+    %35:f32 = add %33, %34
+    ret %35
+  }
+}
+%f4 = func(%p_3:ptr<private, Outer, read_write>):f32 {  # %p_3: 'p'
+  $B6: {
+    %38:ptr<private, array<Inner, 4>, read_write> = access %p_3, 0u
+    %39:ptr<private, mat3x4<f32>, read_write> = access %P, 1u
+    %40:f32 = call %f3, %38, %39
+    ret %40
+  }
+}
+%b = @fragment func():void {
+  $B7: {
+    %42:f32 = call %f4, %P
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Enabled_CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(T));
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            b.Return(f2, b.Load(b.Access<ptr<private_, vec4<i32>, read_write>>(p, 3_u)));
+        });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<private_>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<private_>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(f0, P);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %P:ptr<private, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+}
+
+%f2 = func(%p:ptr<private, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B2: {
+    %4:ptr<private, vec4<i32>, read_write> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<private, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %two:u32 = let 2u
+    %9:ptr<private, array<vec4<i32>, 5>, read_write> = access %p_1, %two
+    %10:vec4<i32> = call %f2, %9
+    ret %10
+  }
+}
+%f0 = func(%p_2:ptr<private, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %one:u32 = let 1u
+    %14:ptr<private, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, %one
+    %15:vec4<i32> = call %f1, %14
+    ret %15
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %17:vec4<i32> = call %f0, %P
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %P:ptr<private, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+}
+
+%f2 = func(%p_indices:array<u32, 2>):vec4<i32> {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<private, array<vec4<i32>, 5>, read_write> = access %P, %4, %5
+    %7:ptr<private, vec4<i32>, read_write> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_indices_1:array<u32, 1>):vec4<i32> {  # %p_indices_1: 'p_indices'
+  $B3: {
+    %11:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %13:array<u32, 2> = construct %11, %two
+    %14:vec4<i32> = call %f2, %13
+    ret %14
+  }
+}
+%f0 = func():vec4<i32> {
+  $B4: {
+    %one:u32 = let 1u
+    %17:array<u32, 1> = construct %one
+    %18:vec4<i32> = call %f1, %17
+    ret %18
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %20:vec4<i32> = call %f0
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformPrivate);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_PrivateAS, Disabled_CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    Var* P = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 P = b.Var("P", ty.ptr<private_>(T));
+             });
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            b.Return(f2, b.Load(b.Access<ptr<private_, vec4<i32>, read_write>>(p, 3_u)));
+        });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(),
+                 [&] { b.Return(f1, b.Call(f2, b.Access(ty.ptr<private_>(T2), p, 2_u))); });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<private_>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(),
+                 [&] { b.Return(f0, b.Call(f1, b.Access(ty.ptr<private_>(T1), p, 1_u))); });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(f0, P);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %P:ptr<private, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+}
+
+%f2 = func(%p:ptr<private, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B2: {
+    %4:ptr<private, vec4<i32>, read_write> = access %p, 3u
+    %5:vec4<i32> = load %4
+    ret %5
+  }
+}
+%f1 = func(%p_1:ptr<private, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %8:ptr<private, array<vec4<i32>, 5>, read_write> = access %p_1, 2u
+    %9:vec4<i32> = call %f2, %8
+    ret %9
+  }
+}
+%f0 = func(%p_2:ptr<private, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %12:ptr<private, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, 1u
+    %13:vec4<i32> = call %f1, %12
+    ret %13
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %15:vec4<i32> = call %f0, %P
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace private_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'function' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace function_as_tests {
+
+using IR_DirectVariableAccessTest_FunctionAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_LocalPtr) {
+    auto* fn = b.Function("f", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn->Block(), [&] {
+        auto* v = b.Var<function, i32>("v");
+        auto* p = b.Let("p", v);
+        b.Var<function>("x", b.Load(p));
+        b.Return(fn);
+    });
+
+    auto* src = R"(
+%f = @fragment func():void {
+  $B1: {
+    %v:ptr<function, i32, read_write> = var
+    %p:ptr<function, i32, read_write> = let %v
+    %4:i32 = load %p
+    %x:ptr<function, i32, read_write> = var %4
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;  // Nothing changes
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_Param_ptr_i32_read) {
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var<function, i32>("F");
+        b.Call(fn_a, 10_i, F, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+%a = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, i32, read_write> = var
+    %8:i32 = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%a = func(%pre:i32, %p_root:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p_root
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, i32, read_write> = var
+    %8:i32 = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_Param_ptr_i32_write) {
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, 42_i);
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var<function, i32>("F");
+        b.Call(fn_a, 10_i, F, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+%a = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):void {
+  $B1: {
+    store %p, 42i
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, i32, read_write> = var
+    %7:void = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%a = func(%pre:i32, %p_root:ptr<function, i32, read_write>, %post:i32):void {
+  $B1: {
+    store %p_root, 42i
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, i32, read_write> = var
+    %7:void = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_Param_ptr_i32_Via_struct_read) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(str_));
+        auto* access = b.Access(ty.ptr<function, i32>(), F, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+%a = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %8:ptr<function, i32, read_write> = access %F, 0u
+    %9:i32 = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+%a = func(%pre:i32, %p_root:ptr<function, str, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:ptr<function, i32, read_write> = access %p_root, 0u
+    %6:i32 = load %5
+    ret %6
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %9:i32 = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_Param_ptr_arr_i32_Via_struct_write) {
+    auto* str_ =
+        ty.Struct(mod.symbols.New("str"), {
+                                              {mod.symbols.Register("arr"), ty.array<i32, 4>()},
+                                          });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, array<i32, 4>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<array<i32, 4>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(str_));
+        auto* access = b.Access(ty.ptr<function, array<i32, 4>>(), F, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+%a = func(%pre:i32, %p:ptr<function, array<i32, 4>, read_write>, %post:i32):void {
+  $B1: {
+    store %p, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %7:ptr<function, array<i32, 4>, read_write> = access %F, 0u
+    %8:void = call %a, 10i, %7, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+%a = func(%pre:i32, %p_root:ptr<function, str, read_write>, %post:i32):void {
+  $B1: {
+    %5:ptr<function, array<i32, 4>, read_write> = access %p_root, 0u
+    store %5, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %8:void = call %a, 10i, %F, 20i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_Param_ptr_i32_mixed) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* Fi = b.Var("Fi", ty.ptr<function, i32>());
+        auto* Fs = b.Var("Fs", ty.ptr<function>(str_));
+        auto* Fa = b.Var("Fa", ty.ptr<function, array<i32, 4>>());
+        {  // a(10, &Fi, 20);
+            b.Call(fn_a, 10_i, Fi, 20_i);
+        }
+        {  // a(30, &Fs.i, 40);
+            auto* access = b.Access(ty.ptr<function, i32>(), Fs, 0_u);
+            b.Call(fn_a, 30_i, access, 40_i);
+        }
+        {  // a(50, &Fa[2], 60);
+            auto* two = b.Let("two", 2_i);
+            auto* access = b.Access(ty.ptr<function, i32>(), Fa, two);
+            b.Call(fn_a, 50_i, access, 60_i);
+        }
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+%a = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %Fi:ptr<function, i32, read_write> = var
+    %Fs:ptr<function, str, read_write> = var
+    %Fa:ptr<function, array<i32, 4>, read_write> = var
+    %10:i32 = call %a, 10i, %Fi, 20i
+    %11:ptr<function, i32, read_write> = access %Fs, 0u
+    %12:i32 = call %a, 30i, %11, 40i
+    %two:i32 = let 2i
+    %14:ptr<function, i32, read_write> = access %Fa, %two
+    %15:i32 = call %a, 50i, %14, 60i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+%a = func(%pre:i32, %p_root:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p_root
+    ret %5
+  }
+}
+%a_1 = func(%pre_1:i32, %p_root_1:ptr<function, str, read_write>, %post_1:i32):i32 {  # %a_1: 'a', %pre_1: 'pre', %p_root_1: 'p_root', %post_1: 'post'
+  $B2: {
+    %10:ptr<function, i32, read_write> = access %p_root_1, 0u
+    %11:i32 = load %10
+    ret %11
+  }
+}
+%a_2 = func(%pre_2:i32, %p_root_2:ptr<function, array<i32, 4>, read_write>, %p_indices:array<u32, 1>, %post_2:i32):i32 {  # %a_2: 'a', %pre_2: 'pre', %p_root_2: 'p_root', %post_2: 'post'
+  $B3: {
+    %17:u32 = access %p_indices, 0u
+    %18:ptr<function, i32, read_write> = access %p_root_2, %17
+    %19:i32 = load %18
+    ret %19
+  }
+}
+%b = @fragment func():void {
+  $B4: {
+    %Fi:ptr<function, i32, read_write> = var
+    %Fs:ptr<function, str, read_write> = var
+    %Fa:ptr<function, array<i32, 4>, read_write> = var
+    %24:i32 = call %a, 10i, %Fi, 20i
+    %25:i32 = call %a_1, 30i, %Fs, 40i
+    %two:i32 = let 2i
+    %27:u32 = convert %two
+    %28:array<u32, 1> = construct %27
+    %29:i32 = call %a_2, 50i, %Fa, %28, 60i
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_Param_ptr_i32_Via_struct_read) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.i32()},
+                                                   });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, i32>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_p)); });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(str_));
+        auto* access = b.Access(ty.ptr<function, i32>(), F, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  i:i32 @offset(0)
+}
+
+%a = func(%pre:i32, %p:ptr<function, i32, read_write>, %post:i32):i32 {
+  $B1: {
+    %5:i32 = load %p
+    ret %5
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %8:ptr<function, i32, read_write> = access %F, 0u
+    %9:i32 = call %a, 10i, %8, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_Param_ptr_arr_i32_Via_struct_write) {
+    auto* str_ =
+        ty.Struct(mod.symbols.New("str"), {
+                                              {mod.symbols.Register("arr"), ty.array<i32, 4>()},
+                                          });
+
+    auto* fn_a = b.Function("a", ty.void_());
+    auto* fn_a_p = b.FunctionParam("p", ty.ptr<function, array<i32, 4>>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_p,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] {
+        b.Store(fn_a_p, b.Splat<array<i32, 4>>(0_i));
+        b.Return(fn_a);
+    });
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(str_));
+        auto* access = b.Access(ty.ptr<function, array<i32, 4>>(), F, 0_u);
+        b.Call(fn_a, 10_i, access, 20_i);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(4) {
+  arr:array<i32, 4> @offset(0)
+}
+
+%a = func(%pre:i32, %p:ptr<function, array<i32, 4>, read_write>, %post:i32):void {
+  $B1: {
+    store %p, array<i32, 4>(0i)
+    ret
+  }
+}
+%b = @fragment func():void {
+  $B2: {
+    %F:ptr<function, str, read_write> = var
+    %7:ptr<function, array<i32, 4>, read_write> = access %F, 0u
+    %8:void = call %a, 10i, %7, 20i
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+
+    auto* f0 = b.Function("f0", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function, vec4<f32>>());
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] { b.Return(f0, b.LoadVectorElement(p, 0_u)); });
+    }
+
+    auto* f1 = b.Function("f1", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function, mat3x4<f32>>());
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* res = b.Var<function, f32>("res");
+            auto* one = b.Let("one", 1_i);
+            {
+                // res += f0(&(*p)[1]);
+                auto* call_0 = b.Call(f0, b.Access(ty.ptr<function, vec4<f32>>(), p, one));
+                b.Store(res, b.Add(b.Load(res), call_0));
+            }
+            {
+                // let p_vec = &(*p)[1];
+                // res += f0(p_vec);
+                auto* p_vec = b.Access(ty.ptr<function, vec4<f32>>(), p, one);
+                b.ir.SetName(p_vec, "p_vec");
+                auto* call_0 = b.Call(f0, p_vec);
+                b.Store(res, b.Add(b.Load(res), call_0));
+            }
+            b.Return(f1, b.Load(res));
+        });
+    }
+
+    auto* f2 = b.Function("f2", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(Inner));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            auto* p_mat = b.Access(ty.ptr<function, mat3x4<f32>>(), p, 0_u);
+            b.ir.SetName(p_mat, "p_mat");
+            b.Return(f2, b.Call(f1, p_mat));
+        });
+    }
+
+    auto* f3 = b.Function("f3", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(ty.array(Inner, 4)));
+        f3->SetParams({p});
+        b.Append(f3->Block(), [&] {
+            auto* three = b.Let("three", 3_i);
+            auto* p_inner = b.Access(ty.ptr<function>(Inner), p, three);
+            b.ir.SetName(p_inner, "p_inner");
+            b.Return(f3, b.Call(f2, p_inner));
+        });
+    }
+
+    auto* f4 = b.Function("f4", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(Outer));
+        f4->SetParams({p});
+        b.Append(f4->Block(), [&] {
+            auto* access = b.Access(ty.ptr<function>(ty.array(Inner, 4)), p, 0_u);
+            b.Return(f4, b.Call(f3, access));
+        });
+    }
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto F = b.Var("F", ty.ptr<function>(Outer));
+        b.Call(f4, F);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+%f0 = func(%p:ptr<function, vec4<f32>, read_write>):f32 {
+  $B1: {
+    %3:f32 = load_vector_element %p, 0u
+    ret %3
+  }
+}
+%f1 = func(%p_1:ptr<function, mat3x4<f32>, read_write>):f32 {  # %p_1: 'p'
+  $B2: {
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %8:ptr<function, vec4<f32>, read_write> = access %p_1, %one
+    %9:f32 = call %f0, %8
+    %10:f32 = load %res
+    %11:f32 = add %10, %9
+    store %res, %11
+    %p_vec:ptr<function, vec4<f32>, read_write> = access %p_1, %one
+    %13:f32 = call %f0, %p_vec
+    %14:f32 = load %res
+    %15:f32 = add %14, %13
+    store %res, %15
+    %16:f32 = load %res
+    ret %16
+  }
+}
+%f2 = func(%p_2:ptr<function, Inner, read_write>):f32 {  # %p_2: 'p'
+  $B3: {
+    %p_mat:ptr<function, mat3x4<f32>, read_write> = access %p_2, 0u
+    %20:f32 = call %f1, %p_mat
+    ret %20
+  }
+}
+%f3 = func(%p_3:ptr<function, array<Inner, 4>, read_write>):f32 {  # %p_3: 'p'
+  $B4: {
+    %three:i32 = let 3i
+    %p_inner:ptr<function, Inner, read_write> = access %p_3, %three
+    %25:f32 = call %f2, %p_inner
+    ret %25
+  }
+}
+%f4 = func(%p_4:ptr<function, Outer, read_write>):f32 {  # %p_4: 'p'
+  $B5: {
+    %28:ptr<function, array<Inner, 4>, read_write> = access %p_4, 0u
+    %29:f32 = call %f3, %28
+    ret %29
+  }
+}
+%b = @fragment func():void {
+  $B6: {
+    %F:ptr<function, Outer, read_write> = var
+    %32:f32 = call %f4, %F
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+%f0 = func(%p_root:ptr<function, Outer, read_write>, %p_indices:array<u32, 2>):f32 {
+  $B1: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<function, vec4<f32>, read_write> = access %p_root, 0u, %4, 0u, %5
+    %7:f32 = load_vector_element %6, 0u
+    ret %7
+  }
+}
+%f1 = func(%p_root_1:ptr<function, Outer, read_write>, %p_indices_1:array<u32, 1>):f32 {  # %p_root_1: 'p_root', %p_indices_1: 'p_indices'
+  $B2: {
+    %11:u32 = access %p_indices_1, 0u
+    %res:ptr<function, f32, read_write> = var
+    %one:i32 = let 1i
+    %14:u32 = convert %one
+    %15:array<u32, 2> = construct %11, %14
+    %16:f32 = call %f0, %p_root_1, %15
+    %17:f32 = load %res
+    %18:f32 = add %17, %16
+    store %res, %18
+    %19:u32 = convert %one
+    %20:array<u32, 2> = construct %11, %19
+    %21:f32 = call %f0, %p_root_1, %20
+    %22:f32 = load %res
+    %23:f32 = add %22, %21
+    store %res, %23
+    %24:f32 = load %res
+    ret %24
+  }
+}
+%f2 = func(%p_root_2:ptr<function, Outer, read_write>, %p_indices_2:array<u32, 1>):f32 {  # %p_root_2: 'p_root', %p_indices_2: 'p_indices'
+  $B3: {
+    %28:u32 = access %p_indices_2, 0u
+    %29:array<u32, 1> = construct %28
+    %30:f32 = call %f1, %p_root_2, %29
+    ret %30
+  }
+}
+%f3 = func(%p_root_3:ptr<function, Outer, read_write>):f32 {  # %p_root_3: 'p_root'
+  $B4: {
+    %three:i32 = let 3i
+    %34:u32 = convert %three
+    %35:array<u32, 1> = construct %34
+    %36:f32 = call %f2, %p_root_3, %35
+    ret %36
+  }
+}
+%f4 = func(%p_root_4:ptr<function, Outer, read_write>):f32 {  # %p_root_4: 'p_root'
+  $B5: {
+    %39:f32 = call %f3, %p_root_4
+    ret %39
+  }
+}
+%b = @fragment func():void {
+  $B6: {
+    %F:ptr<function, Outer, read_write> = var
+    %42:f32 = call %f4, %F
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_CallChaining) {
+    auto* Inner =
+        ty.Struct(mod.symbols.New("Inner"), {
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+    auto* Outer =
+        ty.Struct(mod.symbols.New("Outer"), {
+                                                {mod.symbols.Register("arr"), ty.array(Inner, 4)},
+                                                {mod.symbols.Register("mat"), ty.mat3x4<f32>()},
+                                            });
+
+    auto* f0 = b.Function("f0", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function, vec4<f32>>());
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] { b.Return(f0, b.LoadVectorElement(p, 0_u)); });
+    }
+
+    auto* f1 = b.Function("f1", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function, mat3x4<f32>>());
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* res = b.Var<function, f32>("res");
+            {
+                // res += f0(&(*p)[1]);
+                auto* call_0 = b.Call(f0, b.Access(ty.ptr<function, vec4<f32>>(), p, 1_i));
+                b.Store(res, b.Add(b.Load(res), call_0));
+            }
+            {
+                // let p_vec = &(*p)[1];
+                // res += f0(p_vec);
+                auto* p_vec = b.Access(ty.ptr<function, vec4<f32>>(), p, 1_i);
+                b.ir.SetName(p_vec, "p_vec");
+                auto* call_0 = b.Call(f0, p_vec);
+                b.Store(res, b.Add(b.Load(res), call_0));
+            }
+            b.Return(f1, b.Load(res));
+        });
+    }
+
+    auto* f2 = b.Function("f2", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(Inner));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            auto* p_mat = b.Access(ty.ptr<function, mat3x4<f32>>(), p, 0_u);
+            b.ir.SetName(p_mat, "p_mat");
+            b.Return(f2, b.Call(f1, p_mat));
+        });
+    }
+
+    auto* f3 = b.Function("f3", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(ty.array(Inner, 4)));
+        f3->SetParams({p});
+        b.Append(f3->Block(), [&] {
+            auto* p_inner = b.Access(ty.ptr<function>(Inner), p, 3_i);
+            b.ir.SetName(p_inner, "p_inner");
+            b.Return(f3, b.Call(f2, p_inner));
+        });
+    }
+
+    auto* f4 = b.Function("f4", ty.f32());
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(Outer));
+        f4->SetParams({p});
+        b.Append(f4->Block(), [&] {
+            auto* access = b.Access(ty.ptr<function>(ty.array(Inner, 4)), p, 0_u);
+            b.Return(f4, b.Call(f3, access));
+        });
+    }
+
+    auto* fn_b = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_b->Block(), [&] {
+        auto F = b.Var("F", ty.ptr<function>(Outer));
+        b.Call(f4, F);
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+Inner = struct @align(16) {
+  mat:mat3x4<f32> @offset(0)
+}
+
+Outer = struct @align(16) {
+  arr:array<Inner, 4> @offset(0)
+  mat:mat3x4<f32> @offset(192)
+}
+
+%f0 = func(%p:ptr<function, vec4<f32>, read_write>):f32 {
+  $B1: {
+    %3:f32 = load_vector_element %p, 0u
+    ret %3
+  }
+}
+%f1 = func(%p_1:ptr<function, mat3x4<f32>, read_write>):f32 {  # %p_1: 'p'
+  $B2: {
+    %res:ptr<function, f32, read_write> = var
+    %7:ptr<function, vec4<f32>, read_write> = access %p_1, 1i
+    %8:f32 = call %f0, %7
+    %9:f32 = load %res
+    %10:f32 = add %9, %8
+    store %res, %10
+    %p_vec:ptr<function, vec4<f32>, read_write> = access %p_1, 1i
+    %12:f32 = call %f0, %p_vec
+    %13:f32 = load %res
+    %14:f32 = add %13, %12
+    store %res, %14
+    %15:f32 = load %res
+    ret %15
+  }
+}
+%f2 = func(%p_2:ptr<function, Inner, read_write>):f32 {  # %p_2: 'p'
+  $B3: {
+    %p_mat:ptr<function, mat3x4<f32>, read_write> = access %p_2, 0u
+    %19:f32 = call %f1, %p_mat
+    ret %19
+  }
+}
+%f3 = func(%p_3:ptr<function, array<Inner, 4>, read_write>):f32 {  # %p_3: 'p'
+  $B4: {
+    %p_inner:ptr<function, Inner, read_write> = access %p_3, 3i
+    %23:f32 = call %f2, %p_inner
+    ret %23
+  }
+}
+%f4 = func(%p_4:ptr<function, Outer, read_write>):f32 {  # %p_4: 'p'
+  $B5: {
+    %26:ptr<function, array<Inner, 4>, read_write> = access %p_4, 0u
+    %27:f32 = call %f3, %26
+    ret %27
+  }
+}
+%b = @fragment func():void {
+  $B6: {
+    %F:ptr<function, Outer, read_write> = var
+    %30:f32 = call %f4, %F
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            b.Return(f2, b.Load(b.Access<ptr<function, vec4<i32>, read_write>>(p, 3_u)));
+        });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(), [&] {
+            auto* two = b.Let("two", 2_u);
+            b.Return(f1, b.Call(f2, b.Access(ty.ptr<function>(T2), p, two)));
+        });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(), [&] {
+            auto* one = b.Let("one", 1_u);
+            b.Return(f0, b.Call(f1, b.Access(ty.ptr<function>(T1), p, one)));
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(T));
+        b.Call(f0, F);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%f2 = func(%p:ptr<function, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B1: {
+    %3:ptr<function, vec4<i32>, read_write> = access %p, 3u
+    %4:vec4<i32> = load %3
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<function, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B2: {
+    %two:u32 = let 2u
+    %8:ptr<function, array<vec4<i32>, 5>, read_write> = access %p_1, %two
+    %9:vec4<i32> = call %f2, %8
+    ret %9
+  }
+}
+%f0 = func(%p_2:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B3: {
+    %one:u32 = let 1u
+    %13:ptr<function, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, %one
+    %14:vec4<i32> = call %f1, %13
+    ret %14
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %F:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+    %17:vec4<i32> = call %f0, %F
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%f2 = func(%p_root:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>, %p_indices:array<u32, 2>):vec4<i32> {
+  $B1: {
+    %4:u32 = access %p_indices, 0u
+    %5:u32 = access %p_indices, 1u
+    %6:ptr<function, array<vec4<i32>, 5>, read_write> = access %p_root, %4, %5
+    %7:ptr<function, vec4<i32>, read_write> = access %6, 3u
+    %8:vec4<i32> = load %7
+    ret %8
+  }
+}
+%f1 = func(%p_root_1:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>, %p_indices_1:array<u32, 1>):vec4<i32> {  # %p_root_1: 'p_root', %p_indices_1: 'p_indices'
+  $B2: {
+    %12:u32 = access %p_indices_1, 0u
+    %two:u32 = let 2u
+    %14:array<u32, 2> = construct %12, %two
+    %15:vec4<i32> = call %f2, %p_root_1, %14
+    ret %15
+  }
+}
+%f0 = func(%p_root_2:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_root_2: 'p_root'
+  $B3: {
+    %one:u32 = let 1u
+    %19:array<u32, 1> = construct %one
+    %20:vec4<i32> = call %f1, %p_root_2, %19
+    ret %20
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %F:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+    %23:vec4<i32> = call %f0, %F
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_CallChaining2) {
+    auto* T3 = ty.vec4i();
+    auto* T2 = ty.array(T3, 5);
+    auto* T1 = ty.array(T2, 5);
+    auto* T = ty.array(T1, 5);
+
+    auto* f2 = b.Function("f2", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T2));
+        f2->SetParams({p});
+        b.Append(f2->Block(), [&] {
+            b.Return(f2, b.Load(b.Access<ptr<function, vec4<i32>, read_write>>(p, 3_u)));
+        });
+    }
+
+    auto* f1 = b.Function("f1", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T1));
+        f1->SetParams({p});
+        b.Append(f1->Block(),
+                 [&] { b.Return(f1, b.Call(f2, b.Access(ty.ptr<function>(T2), p, 2_u))); });
+    }
+
+    auto* f0 = b.Function("f0", T3);
+    {
+        auto* p = b.FunctionParam("p", ty.ptr<function>(T));
+        f0->SetParams({p});
+        b.Append(f0->Block(),
+                 [&] { b.Return(f0, b.Call(f1, b.Access(ty.ptr<function>(T1), p, 1_u))); });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* F = b.Var("F", ty.ptr<function>(T));
+        b.Call(f0, F);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%f2 = func(%p:ptr<function, array<vec4<i32>, 5>, read_write>):vec4<i32> {
+  $B1: {
+    %3:ptr<function, vec4<i32>, read_write> = access %p, 3u
+    %4:vec4<i32> = load %3
+    ret %4
+  }
+}
+%f1 = func(%p_1:ptr<function, array<array<vec4<i32>, 5>, 5>, read_write>):vec4<i32> {  # %p_1: 'p'
+  $B2: {
+    %7:ptr<function, array<vec4<i32>, 5>, read_write> = access %p_1, 2u
+    %8:vec4<i32> = call %f2, %7
+    ret %8
+  }
+}
+%f0 = func(%p_2:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B3: {
+    %11:ptr<function, array<array<vec4<i32>, 5>, 5>, read_write> = access %p_2, 1u
+    %12:vec4<i32> = call %f1, %11
+    ret %12
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %F:ptr<function, array<array<array<vec4<i32>, 5>, 5>, 5>, read_write> = var
+    %15:vec4<i32> = call %f0, %F
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_AliasedParams) {
+    auto* bar = b.Function("bar", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        bar->SetParams({p1, p2});
+        b.Append(bar->Block(), [&] {
+            b.Store(p1, 4_u);
+            b.Store(p2, 5_u);
+            b.Return(bar);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, u32>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        b.Call(bar, a, b_var);
+        b.Call(bar, a, a);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%bar = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 4u
+    store %p2, 5u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B2: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %7:void = call %bar, %a, %b
+    %8:void = call %bar, %a, %a
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%bar = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 4u
+    store %p2, 5u
+    ret
+  }
+}
+%bar_1 = func(%p1_root:ptr<function, u32, read_write>):void {  # %bar_1: 'bar'
+  $B2: {
+    store %p1_root, 4u
+    store %p1_root, 5u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %9:void = call %bar, %a, %b
+    %10:void = call %bar_1, %a
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_AliasedParams) {
+    auto* bar = b.Function("bar", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        bar->SetParams({p1, p2});
+        b.Append(bar->Block(), [&] {
+            b.Store(p1, 4_u);
+            b.Store(p2, 5_u);
+            b.Return(bar);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, u32>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        b.Call(bar, a, b_var);
+        b.Call(bar, a, a);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%bar = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 4u
+    store %p2, 5u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B2: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %7:void = call %bar, %a, %b
+    %8:void = call %bar, %a, %a
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%bar = func(%p1_root:ptr<function, u32, read_write>, %p2_root:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1_root, 4u
+    store %p2_root, 5u
+    ret
+  }
+}
+%bar_1 = func(%p1_root_1:ptr<function, u32, read_write>):void {  # %bar_1: 'bar', %p1_root_1: 'p1_root'
+  $B2: {
+    store %p1_root_1, 4u
+    store %p1_root_1, 5u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %9:void = call %bar, %a, %b
+    %10:void = call %bar_1, %a
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_CallChaining_AliasedAndNonAliased) {
+    auto* baz = b.Function("baz", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        baz->SetParams({p1, p2});
+        b.Append(baz->Block(), [&] {
+            b.Store(p1, 41_u);
+            b.Store(p2, 42_u);
+            b.Return(baz);
+        });
+    }
+
+    auto* bar = b.Function("bar", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, array<u32, 4>>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        bar->SetParams({p1, p2});
+        b.Append(bar->Block(), [&] {
+            auto* l1 = b.Let("l1", p1);
+            auto* l2 = b.Let("l2", l1);
+            auto* elem = b.Access(ty.ptr<function, u32>(), l2, 2_u);
+            auto* l3 = b.Let("l3", elem);
+            b.Call(baz, l3, p2);
+            b.Return(bar);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, array<u32, 4>>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        auto* c = b.Var<function, array<u32, 4>>("c");
+        b.Call(bar, a, b_var);
+        b.Call(bar, a, b.Access(ty.ptr<function, u32>(), c, 1_u));
+        b.Call(bar, a, b.Access(ty.ptr<function, u32>(), a, 1_u));
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%baz = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 41u
+    store %p2, 42u
+    ret
+  }
+}
+%bar = func(%p1_1:ptr<function, array<u32, 4>, read_write>, %p2_1:ptr<function, u32, read_write>):void {  # %p1_1: 'p1', %p2_1: 'p2'
+  $B2: {
+    %l1:ptr<function, array<u32, 4>, read_write> = let %p1_1
+    %l2:ptr<function, array<u32, 4>, read_write> = let %l1
+    %9:ptr<function, u32, read_write> = access %l2, 2u
+    %l3:ptr<function, u32, read_write> = let %9
+    %11:void = call %baz, %l3, %p2_1
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %a:ptr<function, array<u32, 4>, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %16:void = call %bar, %a, %b
+    %17:ptr<function, u32, read_write> = access %c, 1u
+    %18:void = call %bar, %a, %17
+    %19:ptr<function, u32, read_write> = access %a, 1u
+    %20:void = call %bar, %a, %19
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%baz = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 41u
+    store %p2, 42u
+    ret
+  }
+}
+%baz_1 = func(%p1_root:ptr<function, array<u32, 4>, read_write>, %p1_indices:array<u32, 1>, %p2_indices:array<u32, 1>):void {  # %baz_1: 'baz'
+  $B2: {
+    %8:u32 = access %p1_indices, 0u
+    %9:ptr<function, u32, read_write> = access %p1_root, %8
+    %10:u32 = access %p2_indices, 0u
+    %11:ptr<function, u32, read_write> = access %p1_root, %10
+    store %9, 41u
+    store %11, 42u
+    ret
+  }
+}
+%bar = func(%p1_1:ptr<function, array<u32, 4>, read_write>, %p2_1:ptr<function, u32, read_write>):void {  # %p1_1: 'p1', %p2_1: 'p2'
+  $B3: {
+    %l1:ptr<function, array<u32, 4>, read_write> = let %p1_1
+    %l2:ptr<function, array<u32, 4>, read_write> = let %l1
+    %17:ptr<function, u32, read_write> = access %l2, 2u
+    %l3:ptr<function, u32, read_write> = let %17
+    %19:void = call %baz, %l3, %p2_1
+    ret
+  }
+}
+%bar_1 = func(%p1_root_1:ptr<function, array<u32, 4>, read_write>, %p2_indices_1:array<u32, 1>):void {  # %bar_1: 'bar', %p1_root_1: 'p1_root', %p2_indices_1: 'p2_indices'
+  $B4: {
+    %23:u32 = access %p2_indices_1, 0u
+    %24:array<u32, 1> = construct %23
+    %25:void = call %baz_1, %p1_root_1, array<u32, 1>(2u), %24
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %a:ptr<function, array<u32, 4>, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %30:void = call %bar, %a, %b
+    %31:ptr<function, u32, read_write> = access %c, 1u
+    %32:void = call %bar, %a, %31
+    %33:void = call %bar_1, %a, array<u32, 1>(1u)
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Enabled_CallChaining_AliasedAndNonAliased) {
+    auto* baz = b.Function("baz", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        baz->SetParams({p1, p2});
+        b.Append(baz->Block(), [&] {
+            b.Store(p1, 41_u);
+            b.Store(p2, 42_u);
+            b.Return(baz);
+        });
+    }
+
+    auto* bar = b.Function("bar", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, array<u32, 4>>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        bar->SetParams({p1, p2});
+        b.Append(bar->Block(), [&] {
+            auto* elem = b.Access(ty.ptr<function, u32>(), p1, 2_u);
+            b.Call(baz, elem, p2);
+            b.Return(bar);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, array<u32, 4>>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        auto* c = b.Var<function, array<u32, 4>>("c");
+        b.Call(bar, a, b_var);
+        b.Call(bar, a, b.Access(ty.ptr<function, u32>(), c, 1_u));
+        b.Call(bar, a, b.Access(ty.ptr<function, u32>(), a, 1_u));
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%baz = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 41u
+    store %p2, 42u
+    ret
+  }
+}
+%bar = func(%p1_1:ptr<function, array<u32, 4>, read_write>, %p2_1:ptr<function, u32, read_write>):void {  # %p1_1: 'p1', %p2_1: 'p2'
+  $B2: {
+    %7:ptr<function, u32, read_write> = access %p1_1, 2u
+    %8:void = call %baz, %7, %p2_1
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %a:ptr<function, array<u32, 4>, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %13:void = call %bar, %a, %b
+    %14:ptr<function, u32, read_write> = access %c, 1u
+    %15:void = call %bar, %a, %14
+    %16:ptr<function, u32, read_write> = access %a, 1u
+    %17:void = call %bar, %a, %16
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%baz = func(%p1_root:ptr<function, array<u32, 4>, read_write>, %p1_indices:array<u32, 1>, %p2_root:ptr<function, u32, read_write>):void {
+  $B1: {
+    %5:u32 = access %p1_indices, 0u
+    %6:ptr<function, u32, read_write> = access %p1_root, %5
+    store %6, 41u
+    store %p2_root, 42u
+    ret
+  }
+}
+%baz_1 = func(%p1_root_1:ptr<function, array<u32, 4>, read_write>, %p1_indices_1:array<u32, 1>, %p2_root_1:ptr<function, array<u32, 4>, read_write>, %p2_indices:array<u32, 1>):void {  # %baz_1: 'baz', %p1_root_1: 'p1_root', %p1_indices_1: 'p1_indices', %p2_root_1: 'p2_root'
+  $B2: {
+    %12:u32 = access %p1_indices_1, 0u
+    %13:ptr<function, u32, read_write> = access %p1_root_1, %12
+    %14:u32 = access %p2_indices, 0u
+    %15:ptr<function, u32, read_write> = access %p2_root_1, %14
+    store %13, 41u
+    store %15, 42u
+    ret
+  }
+}
+%baz_2 = func(%p1_root_2:ptr<function, array<u32, 4>, read_write>, %p1_indices_2:array<u32, 1>, %p2_indices_1:array<u32, 1>):void {  # %baz_2: 'baz', %p1_root_2: 'p1_root', %p1_indices_2: 'p1_indices', %p2_indices_1: 'p2_indices'
+  $B3: {
+    %20:u32 = access %p1_indices_2, 0u
+    %21:ptr<function, u32, read_write> = access %p1_root_2, %20
+    %22:u32 = access %p2_indices_1, 0u
+    %23:ptr<function, u32, read_write> = access %p1_root_2, %22
+    store %21, 41u
+    store %23, 42u
+    ret
+  }
+}
+%bar = func(%p1_root_3:ptr<function, array<u32, 4>, read_write>, %p2_root_2:ptr<function, u32, read_write>):void {  # %p1_root_3: 'p1_root', %p2_root_2: 'p2_root'
+  $B4: {
+    %27:void = call %baz, %p1_root_3, array<u32, 1>(2u), %p2_root_2
+    ret
+  }
+}
+%bar_1 = func(%p1_root_4:ptr<function, array<u32, 4>, read_write>, %p2_root_3:ptr<function, array<u32, 4>, read_write>, %p2_indices_2:array<u32, 1>):void {  # %bar_1: 'bar', %p1_root_4: 'p1_root', %p2_root_3: 'p2_root', %p2_indices_2: 'p2_indices'
+  $B5: {
+    %32:u32 = access %p2_indices_2, 0u
+    %33:array<u32, 1> = construct %32
+    %34:void = call %baz_1, %p1_root_4, array<u32, 1>(2u), %p2_root_3, %33
+    ret
+  }
+}
+%bar_2 = func(%p1_root_5:ptr<function, array<u32, 4>, read_write>, %p2_indices_3:array<u32, 1>):void {  # %bar_2: 'bar', %p1_root_5: 'p1_root', %p2_indices_3: 'p2_indices'
+  $B6: {
+    %38:u32 = access %p2_indices_3, 0u
+    %39:array<u32, 1> = construct %38
+    %40:void = call %baz_2, %p1_root_5, array<u32, 1>(2u), %39
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B7: {
+    %a:ptr<function, array<u32, 4>, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %45:void = call %bar, %a, %b
+    %46:void = call %bar_1, %a, %c, array<u32, 1>(1u)
+    %47:void = call %bar_2, %a, array<u32, 1>(1u)
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformFunction);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, Disabled_ThreeParams_AliasingVariants) {
+    auto* foo = b.Function("foo", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        auto* p3 = b.FunctionParam("p3", ty.ptr<function, u32>());
+        foo->SetParams({p1, p2, p3});
+        b.Append(foo->Block(), [&] {
+            b.Store(p1, 1_u);
+            b.Store(p2, 2_u);
+            b.Store(p3, 3_u);
+            b.Return(foo);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, u32>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        auto* c = b.Var<function, array<u32, 4>>("c");
+        // None alias
+        b.Call(foo, a, b_var, b.Access(ty.ptr<function, u32>(), c, 0_u));
+        // p1 & p2 alias (p3 is non-aliased sub-object access)
+        b.Call(foo, a, a, b.Access(ty.ptr<function, u32>(), c, 1_u));
+        // p1 & p3 alias
+        b.Call(foo, a, b_var, a);
+        // p2 & p3 alias
+        b.Call(foo, a, b_var, b_var);
+        // All 3 alias
+        b.Call(foo, a, a, a);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%foo = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 1u
+    store %p2, 2u
+    store %p3, 3u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B2: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %9:ptr<function, u32, read_write> = access %c, 0u
+    %10:void = call %foo, %a, %b, %9
+    %11:ptr<function, u32, read_write> = access %c, 1u
+    %12:void = call %foo, %a, %a, %11
+    %13:void = call %foo, %a, %b, %a
+    %14:void = call %foo, %a, %b, %b
+    %15:void = call %foo, %a, %a, %a
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%foo = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 1u
+    store %p2, 2u
+    store %p3, 3u
+    ret
+  }
+}
+%foo_1 = func(%p1_root:ptr<function, u32, read_write>, %p3_1:ptr<function, u32, read_write>):void {  # %foo_1: 'foo', %p3_1: 'p3'
+  $B2: {
+    store %p1_root, 1u
+    store %p1_root, 2u
+    store %p3_1, 3u
+    ret
+  }
+}
+%foo_2 = func(%p1_root_1:ptr<function, u32, read_write>, %p2_1:ptr<function, u32, read_write>):void {  # %foo_2: 'foo', %p1_root_1: 'p1_root', %p2_1: 'p2'
+  $B3: {
+    store %p1_root_1, 1u
+    store %p2_1, 2u
+    store %p1_root_1, 3u
+    ret
+  }
+}
+%foo_3 = func(%p1_1:ptr<function, u32, read_write>, %p2_root:ptr<function, u32, read_write>):void {  # %foo_3: 'foo', %p1_1: 'p1'
+  $B4: {
+    store %p1_1, 1u
+    store %p2_root, 2u
+    store %p2_root, 3u
+    ret
+  }
+}
+%foo_4 = func(%p1_root_2:ptr<function, u32, read_write>):void {  # %foo_4: 'foo', %p1_root_2: 'p1_root'
+  $B5: {
+    store %p1_root_2, 1u
+    store %p1_root_2, 2u
+    store %p1_root_2, 3u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B6: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %20:ptr<function, u32, read_write> = access %c, 0u
+    %21:void = call %foo, %a, %b, %20
+    %22:ptr<function, u32, read_write> = access %c, 1u
+    %23:void = call %foo_1, %a, %22
+    %24:void = call %foo_2, %a, %b
+    %25:void = call %foo_3, %a, %b
+    %26:void = call %foo_4, %a
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS, OnlyAliasedVariants) {
+    auto* foo = b.Function("foo", ty.void_());
+    {
+        auto* p1 = b.FunctionParam("p1", ty.ptr<function, u32>());
+        auto* p2 = b.FunctionParam("p2", ty.ptr<function, u32>());
+        auto* p3 = b.FunctionParam("p3", ty.ptr<function, u32>());
+        foo->SetParams({p1, p2, p3});
+        b.Append(foo->Block(), [&] {
+            b.Store(p1, 1_u);
+            b.Store(p2, 2_u);
+            b.Store(p3, 3_u);
+            b.Return(foo);
+        });
+    }
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* a = b.Var<function, u32>("a");
+        auto* b_var = b.Var<function, u32>("b");
+        auto* c = b.Var<function, array<u32, 4>>("c");
+        // p1 & p2 alias (p3 is non-aliased sub-object access)
+        b.Call(foo, a, a, b.Access(ty.ptr<function, u32>(), c, 1_u));
+        // p1 & p3 alias
+        b.Call(foo, a, b_var, a);
+        // p2 & p3 alias
+        b.Call(foo, a, b_var, b_var);
+        // All 3 alias
+        b.Call(foo, a, a, a);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+%foo = func(%p1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1, 1u
+    store %p2, 2u
+    store %p3, 3u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B2: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %9:ptr<function, u32, read_write> = access %c, 1u
+    %10:void = call %foo, %a, %a, %9
+    %11:void = call %foo, %a, %b, %a
+    %12:void = call %foo, %a, %b, %b
+    %13:void = call %foo, %a, %a, %a
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+%foo = func(%p1_root:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B1: {
+    store %p1_root, 1u
+    store %p1_root, 2u
+    store %p3, 3u
+    ret
+  }
+}
+%foo_1 = func(%p1_root_1:ptr<function, u32, read_write>, %p2:ptr<function, u32, read_write>):void {  # %foo_1: 'foo', %p1_root_1: 'p1_root'
+  $B2: {
+    store %p1_root_1, 1u
+    store %p2, 2u
+    store %p1_root_1, 3u
+    ret
+  }
+}
+%foo_2 = func(%p1:ptr<function, u32, read_write>, %p2_root:ptr<function, u32, read_write>):void {  # %foo_2: 'foo'
+  $B3: {
+    store %p1, 1u
+    store %p2_root, 2u
+    store %p2_root, 3u
+    ret
+  }
+}
+%foo_3 = func(%p1_root_2:ptr<function, u32, read_write>):void {  # %foo_3: 'foo', %p1_root_2: 'p1_root'
+  $B4: {
+    store %p1_root_2, 1u
+    store %p1_root_2, 2u
+    store %p1_root_2, 3u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B5: {
+    %a:ptr<function, u32, read_write> = var
+    %b:ptr<function, u32, read_write> = var
+    %c:ptr<function, array<u32, 4>, read_write> = var
+    %16:ptr<function, u32, read_write> = access %c, 1u
+    %17:void = call %foo, %a, %16
+    %18:void = call %foo_1, %a, %b
+    %19:void = call %foo_2, %a, %b
+    %20:void = call %foo_3, %a
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_FunctionAS,
+       AlwaysTransform_AliasedAndNonAliased_DifferentRoots) {
+    auto* ssbo = b.Var("ssbo", ty.ptr(storage, ty.u32()));
+    ssbo->SetBindingPoint(0, 0);
+    mod.root_block->Append(ssbo);
+
+    auto* baz = b.Function("baz", ty.void_());
+    auto* p1 = b.FunctionParam("p1", ty.ptr(storage, ty.u32()));
+    auto* p2 = b.FunctionParam("p2", ty.ptr(function, ty.u32()));
+    auto* p3 = b.FunctionParam("p3", ty.ptr(function, ty.u32()));
+    baz->SetParams({p1, p2, p3});
+    b.Append(baz->Block(), [&] {
+        b.Load(p1);
+        b.Load(p2);
+        b.Load(p3);
+        b.Return(baz);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    b.Append(foo->Block(), [&] {
+        auto* a = b.Var("a", ty.ptr(function, ty.u32()));
+        b.Call(ty.void_(), baz, ssbo, a, a);
+        b.Return(foo);
+    });
+
+    auto* bar = b.Function("bar", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(bar->Block(), [&] {
+        auto* x = b.Var("x", ty.ptr(function, ty.u32()));
+        auto* y = b.Var("y", ty.ptr(function, ty.u32()));
+        b.Call(ty.void_(), baz, ssbo, x, y);
+        b.Call(ty.void_(), foo);
+        b.Return(bar);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %ssbo:ptr<storage, u32, read_write> = var @binding_point(0, 0)
+}
+
+%baz = func(%p1:ptr<storage, u32, read_write>, %p2:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B2: {
+    %6:u32 = load %p1
+    %7:u32 = load %p2
+    %8:u32 = load %p3
+    ret
+  }
+}
+%foo = func():void {
+  $B3: {
+    %a:ptr<function, u32, read_write> = var
+    %11:void = call %baz, %ssbo, %a, %a
+    ret
+  }
+}
+%bar = @fragment func():void {
+  $B4: {
+    %x:ptr<function, u32, read_write> = var
+    %y:ptr<function, u32, read_write> = var
+    %15:void = call %baz, %ssbo, %x, %y
+    %16:void = call %foo
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %ssbo:ptr<storage, u32, read_write> = var @binding_point(0, 0)
+}
+
+%baz = func(%p2:ptr<function, u32, read_write>, %p3:ptr<function, u32, read_write>):void {
+  $B2: {
+    %5:u32 = load %ssbo
+    %6:u32 = load %p2
+    %7:u32 = load %p3
+    ret
+  }
+}
+%baz_1 = func(%p2_root:ptr<function, u32, read_write>):void {  # %baz_1: 'baz'
+  $B3: {
+    %10:u32 = load %ssbo
+    %11:u32 = load %p2_root
+    %12:u32 = load %p2_root
+    ret
+  }
+}
+%foo = func():void {
+  $B4: {
+    %a:ptr<function, u32, read_write> = var
+    %15:void = call %baz_1, %a
+    ret
+  }
+}
+%bar = @fragment func():void {
+  $B5: {
+    %x:ptr<function, u32, read_write> = var
+    %y:ptr<function, u32, read_write> = var
+    %19:void = call %baz, %x, %y
+    %20:void = call %foo
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace function_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// 'handle' address space
+////////////////////////////////////////////////////////////////////////////////
+namespace handle_as_tests {
+
+using IR_DirectVariableAccessTest_HandleAS = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_LocalTextureSampler) {
+    auto* tex =
+        b.Var("tex", handle, ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32()),
+              core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* fn = b.Function("f", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn->Block(), [&] {
+        auto* t = b.Load(tex);
+        auto* s = b.Load(samp);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = @fragment func():void {
+  $B2: {
+    %4:texture_2d<f32> = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureGather 0u, %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;  // Nothing changes
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_LocalTextureSampler) {
+    auto* tex = b.Var("tex", handle, ty.external_texture(), core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* fn = b.Function("f", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn->Block(), [&] {
+        auto* t = b.Load(tex);
+        auto* s = b.Load(samp);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureSampleBaseClampToEdge, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = @fragment func():void {
+  $B2: {
+    %4:texture_external = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureSampleBaseClampToEdge %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;  // Nothing changes
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_LocalTextureParamSampler) {
+    auto* tex =
+        b.Var("tex", handle, ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32()),
+              core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({s});
+    b.Append(fn->Block(), [&] {
+        auto* t = b.Load(tex);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        b.Call(ty.void_(), fn, s2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%s:sampler):void {
+  $B2: {
+    %5:texture_2d<f32> = load %tex
+    %6:vec4<f32> = textureGather 0u, %5, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:sampler = load %samp
+    %5:texture_2d<f32> = load %tex
+    %6:vec4<f32> = textureGather 0u, %5, %4, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_LocalTextureParamSampler) {
+    auto* tex = b.Var("tex", handle, ty.external_texture(), core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({s});
+    b.Append(fn->Block(), [&] {
+        auto* t = b.Load(tex);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureSampleBaseClampToEdge, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        b.Call(ty.void_(), fn, s2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%s:sampler):void {
+  $B2: {
+    %5:texture_external = load %tex
+    %6:vec4<f32> = textureSampleBaseClampToEdge %5, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%s:sampler):void {
+  $B2: {
+    %5:texture_external = load %tex
+    %6:vec4<f32> = textureSampleBaseClampToEdge %5, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_LocalTextureParamTextureLoad) {
+    auto* tex =
+        b.Var("tex", handle, ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32()),
+              core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* t = b.FunctionParam("texparam",
+                              ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32()));
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        b.Let("p",
+              b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t, b.Splat(ty.vec2u(), 0_u), 0_u));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+}
+
+%f = func(%texparam:texture_2d<f32>):void {
+  $B2: {
+    %4:vec4<f32> = textureLoad %texparam, vec2<u32>(0u), 0u
+    %p:vec4<f32> = let %4
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %7:texture_2d<f32> = load %tex
+    %8:void = call %f, %7
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+}
+
+%f = func():void {
+  $B2: {
+    %3:texture_2d<f32> = load %tex
+    %4:vec4<f32> = textureLoad %3, vec2<u32>(0u), 0u
+    %p:vec4<f32> = let %4
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %7:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_LocalTextureParamTextureLoad) {
+    auto* tex = b.Var("tex", handle, ty.external_texture(), core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* t = b.FunctionParam("texparam", ty.external_texture());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t, b.Splat(ty.vec2u(), 0_u)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+}
+
+%f = func(%texparam:texture_external):void {
+  $B2: {
+    %4:vec4<f32> = textureLoad %texparam, vec2<u32>(0u)
+    %p:vec4<f32> = let %4
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %7:texture_external = load %tex
+    %8:void = call %f, %7
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+}
+
+%f = func():void {
+  $B2: {
+    %3:texture_external = load %tex
+    %4:vec4<f32> = textureLoad %3, vec2<u32>(0u)
+    %p:vec4<f32> = let %4
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %7:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_ParamTextureLocalSampler) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        auto* s = b.Load(samp);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_2d<f32>):void {
+  $B2: {
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureGather 0u, %t, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:texture_2d<f32> = load %tex
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_2d<f32> = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureGather 0u, %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_ParamTextureLocalSampler) {
+    auto* tex_ty = ty.external_texture();
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        auto* s = b.Load(samp);
+
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureSampleBaseClampToEdge, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_external):void {
+  $B2: {
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureSampleBaseClampToEdge %t, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:texture_external = load %tex
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_external = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureSampleBaseClampToEdge %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_ParamTextureParamSampler) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t, s});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2, s2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_2d<f32>, %s:sampler):void {
+  $B2: {
+    %6:vec4<f32> = textureGather 0u, %t, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:texture_2d<f32> = load %tex
+    %11:void = call %f, %10, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_2d<f32> = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureGather 0u, %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_ParamTextureParamSampler) {
+    auto* tex_ty = ty.external_texture();
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t, s});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureSampleBaseClampToEdge, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        auto* t2 = b.Load(tex);
+        b.Call(ty.void_(), fn, t2, s2);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_external, %s:sampler):void {
+  $B2: {
+    %6:vec4<f32> = textureSampleBaseClampToEdge %t, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:texture_external = load %tex
+    %11:void = call %f, %10, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%s:sampler):void {
+  $B2: {
+    %5:texture_external = load %tex
+    %6:vec4<f32> = textureSampleBaseClampToEdge %5, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:void = call %f, %9
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_MultiFunction) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t, s});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* t2 = b.FunctionParam("t", tex_ty);
+    auto* fn2 = b.Function("g", ty.void_());
+    fn2->SetParams({t2});
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        b.Call(ty.void_(), fn, t2, s2);
+        b.Return(fn2);
+    });
+
+    auto* fn3 = b.Function("h", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn3->Block(), [&] {
+        auto* t3 = b.Load(tex);
+        b.Call(ty.void_(), fn2, t3);
+        b.Return(fn3);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_2d<f32>, %s:sampler):void {
+  $B2: {
+    %6:vec4<f32> = textureGather 0u, %t, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = func(%t_1:texture_2d<f32>):void {  # %t_1: 't'
+  $B3: {
+    %10:sampler = load %samp
+    %11:void = call %f, %t_1, %10
+    ret
+  }
+}
+%h = @fragment func():void {
+  $B4: {
+    %13:texture_2d<f32> = load %tex
+    %14:void = call %g, %13
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_2d<f32> = load %tex
+    %5:sampler = load %samp
+    %6:vec4<f32> = textureGather 0u, %4, %5, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = func():void {
+  $B3: {
+    %9:void = call %f
+    ret
+  }
+}
+%h = @fragment func():void {
+  $B4: {
+    %11:void = call %g
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_MultiFunction) {
+    auto* tex_ty = ty.external_texture();
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t, s});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t, b.Splat(ty.vec2i(), 0_i)));
+        b.Return(fn);
+    });
+
+    auto* t2 = b.FunctionParam("t", tex_ty);
+    auto* fn2 = b.Function("g", ty.void_());
+    fn2->SetParams({t2});
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        b.Call(ty.void_(), fn, t2, s2);
+        b.Return(fn2);
+    });
+
+    auto* fn3 = b.Function("h", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn3->Block(), [&] {
+        auto* t3 = b.Load(tex);
+        b.Call(ty.void_(), fn2, t3);
+        b.Return(fn3);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_external, %s:sampler):void {
+  $B2: {
+    %6:vec4<f32> = textureLoad %t, vec2<i32>(0i)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = func(%t_1:texture_external):void {  # %t_1: 't'
+  $B3: {
+    %10:sampler = load %samp
+    %11:void = call %f, %t_1, %10
+    ret
+  }
+}
+%h = @fragment func():void {
+  $B4: {
+    %13:texture_external = load %tex
+    %14:void = call %g, %13
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%s:sampler):void {
+  $B2: {
+    %5:texture_external = load %tex
+    %6:vec4<f32> = textureLoad %5, vec2<i32>(0i)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = func():void {
+  $B3: {
+    %9:sampler = load %samp
+    %10:void = call %f, %9
+    ret
+  }
+}
+%h = @fragment func():void {
+  $B4: {
+    %12:void = call %g
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Disabled_MultiFunction) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+    auto* s = b.FunctionParam("s", ty.sampler());
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t, s});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* t2 = b.FunctionParam("t", tex_ty);
+    auto* fn2 = b.Function("g", ty.void_());
+    fn2->SetParams({t2});
+    b.Append(fn2->Block(), [&] {
+        auto* s2 = b.Load(samp);
+        b.Call(ty.void_(), fn, t2, s2);
+        b.Return(fn2);
+    });
+
+    auto* fn3 = b.Function("h", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn3->Block(), [&] {
+        auto* t3 = b.Load(tex);
+        b.Call(ty.void_(), fn2, t3);
+        b.Return(fn3);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_2d<f32>, %s:sampler):void {
+  $B2: {
+    %6:vec4<f32> = textureGather 0u, %t, %s, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %6
+    ret
+  }
+}
+%g = func(%t_1:texture_2d<f32>):void {  # %t_1: 't'
+  $B3: {
+    %10:sampler = load %samp
+    %11:void = call %f, %t_1, %10
+    ret
+  }
+}
+%h = @fragment func():void {
+  $B4: {
+    %13:texture_2d<f32> = load %tex
+    %14:void = call %g, %13
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = src;  // No change
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_DuplicateParam) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(samp);
+
+    auto* t1 = b.FunctionParam("t1", tex_ty);
+    auto* t2 = b.FunctionParam("t2", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t1, t2});
+    b.Append(fn->Block(), [&] {
+        auto* s = b.Load(samp);
+
+        b.Let("p1", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t1, s,
+                           b.Splat(ty.vec2f(), 0_f)));
+        b.Let("p2", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t2, s,
+                           b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t3 = b.Load(tex);
+        auto* t4 = b.Load(tex);
+        b.Call(ty.void_(), fn, t3, t4);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t1:texture_2d<f32>, %t2:texture_2d<f32>):void {
+  $B2: {
+    %6:sampler = load %samp
+    %7:vec4<f32> = textureGather 0u, %t1, %6, vec2<f32>(0.0f)
+    %p1:vec4<f32> = let %7
+    %9:vec4<f32> = textureGather 0u, %t2, %6, vec2<f32>(0.0f)
+    %p2:vec4<f32> = let %9
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %12:texture_2d<f32> = load %tex
+    %13:texture_2d<f32> = load %tex
+    %14:void = call %f, %12, %13
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_2d<f32> = load %tex
+    %5:texture_2d<f32> = load %tex
+    %6:sampler = load %samp
+    %7:vec4<f32> = textureGather 0u, %4, %6, vec2<f32>(0.0f)
+    %p1:vec4<f32> = let %7
+    %9:vec4<f32> = textureGather 0u, %5, %6, vec2<f32>(0.0f)
+    %p2:vec4<f32> = let %9
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %12:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_DuplicateParam) {
+    auto* tex_ty = ty.external_texture();
+    auto* tex = b.Var("tex", handle, tex_ty, core::Access::kRead);
+    tex->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex);
+
+    auto* t1 = b.FunctionParam("t1", tex_ty);
+    auto* t2 = b.FunctionParam("t2", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t1, t2});
+    b.Append(fn->Block(), [&] {
+        b.Let("p1",
+              b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t1, b.Splat(ty.vec2i(), 0_i)));
+        b.Let("p2",
+              b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t2, b.Splat(ty.vec2i(), 0_i)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn2->Block(), [&] {
+        auto* t3 = b.Load(tex);
+        auto* t4 = b.Load(tex);
+        b.Call(ty.void_(), fn, t3, t4);
+        b.Return(fn2);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+}
+
+%f = func(%t1:texture_external, %t2:texture_external):void {
+  $B2: {
+    %5:vec4<f32> = textureLoad %t1, vec2<i32>(0i)
+    %p1:vec4<f32> = let %5
+    %7:vec4<f32> = textureLoad %t2, vec2<i32>(0i)
+    %p2:vec4<f32> = let %7
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %10:texture_external = load %tex
+    %11:texture_external = load %tex
+    %12:void = call %f, %10, %11
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+}
+
+%f = func():void {
+  $B2: {
+    %3:texture_external = load %tex
+    %4:texture_external = load %tex
+    %5:vec4<f32> = textureLoad %3, vec2<i32>(0i)
+    %p1:vec4<f32> = let %5
+    %7:vec4<f32> = textureLoad %4, vec2<i32>(0i)
+    %p2:vec4<f32> = let %7
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %10:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_Fork) {
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex1 = b.Var("tex1", handle, tex_ty, core::Access::kRead);
+    tex1->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex1);
+    auto* tex2 = b.Var("tex2", handle, tex_ty, core::Access::kRead);
+    tex2->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(tex2);
+
+    auto* samp = b.Var("samp", handle, ty.sampler(), core::Access::kRead);
+    samp->SetBindingPoint(0, 2);
+    b.ir.root_block->Append(samp);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        auto* s = b.Load(samp);
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureGather, 0_u, t, s,
+                          b.Splat(ty.vec2f(), 0_f)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    auto* fn3 = b.Function("h", ty.void_());
+
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex1);
+        b.Call(ty.void_(), fn, t2);
+        b.Call(ty.void_(), fn3);
+        b.Return(fn2);
+    });
+
+    b.Append(fn3->Block(), [&] {
+        auto* t2 = b.Load(tex2);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn3);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex1:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %tex2:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 1)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 2)
+}
+
+%f = func(%t:texture_2d<f32>):void {
+  $B2: {
+    %6:sampler = load %samp
+    %7:vec4<f32> = textureGather 0u, %t, %6, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %7
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %10:texture_2d<f32> = load %tex1
+    %11:void = call %f, %10
+    %12:void = call %h
+    ret
+  }
+}
+%h = func():void {
+  $B4: {
+    %14:texture_2d<f32> = load %tex2
+    %15:void = call %f, %14
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex1:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 0)
+  %tex2:ptr<handle, texture_2d<f32>, read> = var @binding_point(0, 1)
+  %samp:ptr<handle, sampler, read> = var @binding_point(0, 2)
+}
+
+%f = func():void {
+  $B2: {
+    %5:texture_2d<f32> = load %tex1
+    %6:sampler = load %samp
+    %7:vec4<f32> = textureGather 0u, %5, %6, vec2<f32>(0.0f)
+    %p:vec4<f32> = let %7
+    ret
+  }
+}
+%f_1 = func():void {  # %f_1: 'f'
+  $B3: {
+    %10:texture_2d<f32> = load %tex2
+    %11:sampler = load %samp
+    %12:vec4<f32> = textureGather 0u, %10, %11, vec2<f32>(0.0f)
+    %p_1:vec4<f32> = let %12  # %p_1: 'p'
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B4: {
+    %15:void = call %f
+    %16:void = call %h
+    ret
+  }
+}
+%h = func():void {
+  $B5: {
+    %18:void = call %f_1
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, External_Fork) {
+    auto* tex_ty = ty.external_texture();
+    auto* tex1 = b.Var("tex1", handle, tex_ty, core::Access::kRead);
+    tex1->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(tex1);
+    auto* tex2 = b.Var("tex2", handle, tex_ty, core::Access::kRead);
+    tex2->SetBindingPoint(0, 1);
+    b.ir.root_block->Append(tex2);
+
+    auto* t = b.FunctionParam("t", tex_ty);
+
+    auto* fn = b.Function("f", ty.void_());
+    fn->SetParams({t});
+    b.Append(fn->Block(), [&] {
+        b.Let("p", b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t, b.Splat(ty.vec2i(), 0_i)));
+        b.Return(fn);
+    });
+
+    auto* fn2 = b.Function("g", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    auto* fn3 = b.Function("h", ty.void_());
+
+    b.Append(fn2->Block(), [&] {
+        auto* t2 = b.Load(tex1);
+        b.Call(ty.void_(), fn, t2);
+        b.Call(ty.void_(), fn3);
+        b.Return(fn2);
+    });
+
+    b.Append(fn3->Block(), [&] {
+        auto* t2 = b.Load(tex2);
+        b.Call(ty.void_(), fn, t2);
+        b.Return(fn3);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %tex1:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %tex2:ptr<handle, texture_external, read> = var @binding_point(0, 1)
+}
+
+%f = func(%t:texture_external):void {
+  $B2: {
+    %5:vec4<f32> = textureLoad %t, vec2<i32>(0i)
+    %p:vec4<f32> = let %5
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B3: {
+    %8:texture_external = load %tex1
+    %9:void = call %f, %8
+    %10:void = call %h
+    ret
+  }
+}
+%h = func():void {
+  $B4: {
+    %12:texture_external = load %tex2
+    %13:void = call %f, %12
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %tex1:ptr<handle, texture_external, read> = var @binding_point(0, 0)
+  %tex2:ptr<handle, texture_external, read> = var @binding_point(0, 1)
+}
+
+%f = func():void {
+  $B2: {
+    %4:texture_external = load %tex1
+    %5:vec4<f32> = textureLoad %4, vec2<i32>(0i)
+    %p:vec4<f32> = let %5
+    ret
+  }
+}
+%f_1 = func():void {  # %f_1: 'f'
+  $B3: {
+    %8:texture_external = load %tex2
+    %9:vec4<f32> = textureLoad %8, vec2<i32>(0i)
+    %p_1:vec4<f32> = let %9  # %p_1: 'p'
+    ret
+  }
+}
+%g = @fragment func():void {
+  $B4: {
+    %12:void = call %f
+    %13:void = call %h
+    ret
+  }
+}
+%h = func():void {
+  $B5: {
+    %15:void = call %f_1
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformExternalHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_TextureBindingArrayParam) {
+    auto* texture_type = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* var_ts = b.Var("ts", ty.ptr<handle>(ty.binding_array(texture_type, 3u)));
+    var_ts->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(var_ts);
+
+    auto* fn = b.Function("f", ty.void_());
+    auto* p = b.FunctionParam("p", ty.binding_array(texture_type, 3u));
+    fn->SetParams({p});
+
+    b.Append(fn->Block(), [&] {
+        auto* t = b.Access(texture_type, p, 0_i);
+        b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, t, b.Splat(ty.vec2u(), 0_u), 0_u);
+        b.Return(fn);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* ts = b.Load(var_ts);
+        b.Call(fn, ts);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %ts:ptr<handle, binding_array<texture_2d<f32>, 3>, read> = var @binding_point(0, 0)
+}
+
+%f = func(%p:binding_array<texture_2d<f32>, 3>):void {
+  $B2: {
+    %4:texture_2d<f32> = access %p, 0i
+    %5:vec4<f32> = textureLoad %4, vec2<u32>(0u), 0u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %7:binding_array<texture_2d<f32>, 3> = load %ts
+    %8:void = call %f, %7
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %ts:ptr<handle, binding_array<texture_2d<f32>, 3>, read> = var @binding_point(0, 0)
+}
+
+%f = func():void {
+  $B2: {
+    %3:binding_array<texture_2d<f32>, 3> = load %ts
+    %4:texture_2d<f32> = access %3, 0i
+    %5:vec4<f32> = textureLoad %4, vec2<u32>(0u), 0u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %7:void = call %f
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_HandleAS, Enabled_TextureFromBindingArrayParam) {
+    auto* texture_type = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
+    auto* var_ts = b.Var("ts", ty.ptr<handle>(ty.binding_array(texture_type, 3u)));
+    var_ts->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(var_ts);
+
+    auto* fn = b.Function("f", ty.void_());
+    auto* p = b.FunctionParam("p", texture_type);
+    fn->SetParams({p});
+
+    b.Append(fn->Block(), [&] {
+        b.Call(ty.vec4f(), core::BuiltinFn::kTextureLoad, p, b.Splat(ty.vec2u(), 0_u), 0_u);
+        b.Return(fn);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* zero = b.Let("zero", 0_i);
+        auto* t_ptr = b.Access(ty.ptr<handle>(texture_type), var_ts, zero);
+        auto* t = b.Load(t_ptr);
+
+        b.Call(fn, t);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %ts:ptr<handle, binding_array<texture_2d<f32>, 3>, read> = var @binding_point(0, 0)
+}
+
+%f = func(%p:texture_2d<f32>):void {
+  $B2: {
+    %4:vec4<f32> = textureLoad %p, vec2<u32>(0u), 0u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %zero:i32 = let 0i
+    %7:ptr<handle, texture_2d<f32>, read> = access %ts, %zero
+    %8:texture_2d<f32> = load %7
+    %9:void = call %f, %8
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %ts:ptr<handle, binding_array<texture_2d<f32>, 3>, read> = var @binding_point(0, 0)
+}
+
+%f = func(%p_indices:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_indices, 0u
+    %5:ptr<handle, texture_2d<f32>, read> = access %ts, %4
+    %6:texture_2d<f32> = load %5
+    %7:vec4<f32> = textureLoad %6, vec2<u32>(0u), 0u
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %zero:i32 = let 0i
+    %10:u32 = convert %zero
+    %11:array<u32, 1> = construct %10
+    %12:void = call %f, %11
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, kTransformHandle);
+
+    EXPECT_EQ(expect, str());
+}
+}  // namespace handle_as_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// builtin function calls
+////////////////////////////////////////////////////////////////////////////////
+namespace builtin_fn_calls {
+
+using IR_DirectVariableAccessTest_BuiltinFn = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_BuiltinFn, ArrayLength) {
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var<storage, array<f32>>("S");
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_len = b.Function("len", ty.u32());
+    auto* fn_len_p = b.FunctionParam("p", ty.ptr<storage, array<f32>>());
+    fn_len->SetParams({fn_len_p});
+    b.Append(fn_len->Block(),
+             [&] {  //
+                 b.Return(fn_len, b.Call(ty.u32(), core::BuiltinFn::kArrayLength, fn_len_p));
+             });
+
+    auto* fn_f = b.Function("b", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_f->Block(), [&] {
+        b.Call(fn_len, S);
+        b.Return(fn_f);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %S:ptr<storage, array<f32>, read_write> = var @binding_point(0, 0)
+}
+
+%len = func(%p:ptr<storage, array<f32>, read_write>):u32 {
+  $B2: {
+    %4:u32 = arrayLength %p
+    ret %4
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %6:u32 = call %len, %S
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %S:ptr<storage, array<f32>, read_write> = var @binding_point(0, 0)
+}
+
+%len = func():u32 {
+  $B2: {
+    %3:u32 = arrayLength %S
+    ret %3
+  }
+}
+%b = @fragment func():void {
+  $B3: {
+    %5:u32 = call %len
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BuiltinFn, AtomicLoad) {
+    Var* W = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 W = b.Var("W", ty.ptr<workgroup>(ty.atomic<i32>()));
+             });
+
+    auto* fn_load = b.Function("load", ty.i32());
+    auto* fn_load_p = b.FunctionParam("p", ty.ptr<workgroup>(ty.atomic<i32>()));
+    fn_load->SetParams({fn_load_p});
+    b.Append(fn_load->Block(),
+             [&] {  //
+                 b.Return(fn_load, b.Call(ty.i32(), core::BuiltinFn::kAtomicLoad, fn_load_p));
+             });
+
+    auto* fn_f = b.ComputeFunction("b");
+    b.Append(fn_f->Block(), [&] {
+        b.Call(fn_load, W);
+        b.Return(fn_f);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %W:ptr<workgroup, atomic<i32>, read_write> = var
+}
+
+%load = func(%p:ptr<workgroup, atomic<i32>, read_write>):i32 {
+  $B2: {
+    %4:i32 = atomicLoad %p
+    ret %4
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %6:i32 = call %load, %W
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %W:ptr<workgroup, atomic<i32>, read_write> = var
+}
+
+%load = func():i32 {
+  $B2: {
+    %3:i32 = atomicLoad %W
+    ret %3
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B3: {
+    %5:i32 = call %load
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace builtin_fn_calls
+
+////////////////////////////////////////////////////////////////////////////////
+// complex tests
+////////////////////////////////////////////////////////////////////////////////
+namespace complex_tests {
+
+using IR_DirectVariableAccessTest_Complex = TransformTest;
+
+TEST_F(IR_DirectVariableAccessTest_Complex, Param_ptr_mixed_vec4i32_ViaMultiple) {
+    auto* str_ = ty.Struct(mod.symbols.New("str"), {
+                                                       {mod.symbols.Register("i"), ty.vec4i()},
+                                                   });
+
+    Var* U = nullptr;
+    Var* U_str = nullptr;
+    Var* U_arr = nullptr;
+    Var* U_arr_arr = nullptr;
+    Var* S = nullptr;
+    Var* S_str = nullptr;
+    Var* S_arr = nullptr;
+    Var* S_arr_arr = nullptr;
+    Var* W = nullptr;
+    Var* W_str = nullptr;
+    Var* W_arr = nullptr;
+    Var* W_arr_arr = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 U = b.Var<uniform, vec4<i32>>("U");
+                 U->SetBindingPoint(0, 0);
+                 U_str = b.Var("U_str", ty.ptr<uniform>(str_));
+                 U_str->SetBindingPoint(0, 1);
+                 U_arr = b.Var<uniform, array<vec4<i32>, 8>>("U_arr");
+                 U_arr->SetBindingPoint(0, 2);
+                 U_arr_arr = b.Var<uniform, array<array<vec4<i32>, 8>, 4>>("U_arr_arr");
+                 U_arr_arr->SetBindingPoint(0, 3);
+
+                 S = b.Var<storage, vec4<i32>, read>("S");
+                 S->SetBindingPoint(1, 0);
+                 S_str = b.Var("S_str", ty.ptr<storage, read>(str_));
+                 S_str->SetBindingPoint(1, 1);
+                 S_arr = b.Var<storage, array<vec4<i32>, 8>, read>("S_arr");
+                 S_arr->SetBindingPoint(1, 2);
+                 S_arr_arr = b.Var<storage, array<array<vec4<i32>, 8>, 4>, read>("S_arr_arr");
+                 S_arr_arr->SetBindingPoint(1, 3);
+
+                 W = b.Var<workgroup, vec4<i32>>("W");
+                 W_str = b.Var("W_str", ty.ptr<workgroup>(str_));
+                 W_arr = b.Var<workgroup, array<vec4<i32>, 8>>("W_arr");
+                 W_arr_arr = b.Var<workgroup, array<array<vec4<i32>, 8>, 4>>("W_arr_arr");
+             });
+
+    auto* fn_u = b.Function("fn_u", ty.vec4i());
+    auto* fn_u_p = b.FunctionParam("p", ty.ptr<uniform, vec4<i32>, read>());
+    fn_u->SetParams({fn_u_p});
+    b.Append(fn_u->Block(), [&] { b.Return(fn_u, b.Load(fn_u_p)); });
+
+    auto* fn_s = b.Function("fn_s", ty.vec4i());
+    auto* fn_s_p = b.FunctionParam("p", ty.ptr<storage, vec4<i32>, read>());
+    fn_s->SetParams({fn_s_p});
+    b.Append(fn_s->Block(), [&] { b.Return(fn_s, b.Load(fn_s_p)); });
+
+    auto* fn_w = b.Function("fn_w", ty.vec4i());
+    auto* fn_w_p = b.FunctionParam("p", ty.ptr<workgroup, vec4<i32>>());
+    fn_w->SetParams({fn_w_p});
+    b.Append(fn_w->Block(), [&] { b.Return(fn_w, b.Load(fn_w_p)); });
+
+    auto* fn_b = b.ComputeFunction("b");
+    b.Append(fn_b->Block(), [&] {
+        auto* I = b.Let("I", 3_i);
+        auto* J = b.Let("J", 4_i);
+
+        auto* u = b.Call(fn_u, U);
+        b.ir.SetName(u, "u");
+        auto* u_str = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_str, 0_u));
+        b.ir.SetName(u_str, "u_str");
+        auto* u_arr0 = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr, 0_i));
+        b.ir.SetName(u_arr0, "u_arr0");
+        auto* u_arr1 = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr, 1_i));
+        b.ir.SetName(u_arr1, "u_arr1");
+        auto* u_arrI = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr, I));
+        b.ir.SetName(u_arrI, "u_arrI");
+        auto* u_arr1_arr0 =
+            b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr_arr, 1_i, 0_i));
+        b.ir.SetName(u_arr1_arr0, "u_arr1_arr0");
+        auto* u_arr2_arrI = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr_arr, 2_i, I));
+        b.ir.SetName(u_arr2_arrI, "u_arr2_arrI");
+        auto* u_arrI_arr2 = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr_arr, I, 2_i));
+        b.ir.SetName(u_arrI_arr2, "u_arrI_arr2");
+        auto* u_arrI_arrJ = b.Call(fn_u, b.Access(ty.ptr<uniform, vec4<i32>>(), U_arr_arr, I, J));
+        b.ir.SetName(u_arrI_arrJ, "u_arrI_arrJ");
+
+        auto* s = b.Call(fn_s, S);
+        b.ir.SetName(s, "s");
+        auto* s_str = b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_str, 0_u));
+        b.ir.SetName(s_str, "s_str");
+        auto* s_arr0 = b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr, 0_i));
+        b.ir.SetName(s_arr0, "s_arr0");
+        auto* s_arr1 = b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr, 1_i));
+        b.ir.SetName(s_arr1, "s_arr1");
+        auto* s_arrI = b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr, I));
+        b.ir.SetName(s_arrI, "s_arrI");
+        auto* s_arr1_arr0 =
+            b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr_arr, 1_i, 0_i));
+        b.ir.SetName(s_arr1_arr0, "s_arr1_arr0");
+        auto* s_arr2_arrI =
+            b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr_arr, 2_i, I));
+        b.ir.SetName(s_arr2_arrI, "s_arr2_arrI");
+        auto* s_arrI_arr2 =
+            b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr_arr, I, 2_i));
+        b.ir.SetName(s_arrI_arr2, "s_arrI_arr2");
+        auto* s_arrI_arrJ =
+            b.Call(fn_s, b.Access(ty.ptr<storage, vec4<i32>, read>(), S_arr_arr, I, J));
+        b.ir.SetName(s_arrI_arrJ, "s_arrI_arrJ");
+
+        auto* w = b.Call(fn_w, W);
+        b.ir.SetName(w, "w");
+        auto* w_str = b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_str, 0_u));
+        b.ir.SetName(w_str, "w_str");
+        auto* w_arr0 = b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr, 0_i));
+        b.ir.SetName(w_arr0, "w_arr0");
+        auto* w_arr1 = b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr, 1_i));
+        b.ir.SetName(w_arr1, "w_arr1");
+        auto* w_arrI = b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr, I));
+        b.ir.SetName(w_arrI, "w_arrI");
+        auto* w_arr1_arr0 =
+            b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr_arr, 1_i, 0_i));
+        b.ir.SetName(w_arr1_arr0, "w_arr1_arr0");
+        auto* w_arr2_arrI =
+            b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr_arr, 2_i, I));
+        b.ir.SetName(w_arr2_arrI, "w_arr2_arrI");
+        auto* w_arrI_arr2 =
+            b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr_arr, I, 2_i));
+        b.ir.SetName(w_arrI_arr2, "w_arrI_arr2");
+        auto* w_arrI_arrJ = b.Call(fn_w, b.Access(ty.ptr<workgroup, vec4<i32>>(), W_arr_arr, I, J));
+        b.ir.SetName(w_arrI_arrJ, "w_arrI_arrJ");
+
+        b.Return(fn_b);
+    });
+
+    auto* src = R"(
+str = struct @align(16) {
+  i:vec4<i32> @offset(0)
+}
+
+$B1: {  # root
+  %U:ptr<uniform, vec4<i32>, read> = var @binding_point(0, 0)
+  %U_str:ptr<uniform, str, read> = var @binding_point(0, 1)
+  %U_arr:ptr<uniform, array<vec4<i32>, 8>, read> = var @binding_point(0, 2)
+  %U_arr_arr:ptr<uniform, array<array<vec4<i32>, 8>, 4>, read> = var @binding_point(0, 3)
+  %S:ptr<storage, vec4<i32>, read> = var @binding_point(1, 0)
+  %S_str:ptr<storage, str, read> = var @binding_point(1, 1)
+  %S_arr:ptr<storage, array<vec4<i32>, 8>, read> = var @binding_point(1, 2)
+  %S_arr_arr:ptr<storage, array<array<vec4<i32>, 8>, 4>, read> = var @binding_point(1, 3)
+  %W:ptr<workgroup, vec4<i32>, read_write> = var
+  %W_str:ptr<workgroup, str, read_write> = var
+  %W_arr:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+  %W_arr_arr:ptr<workgroup, array<array<vec4<i32>, 8>, 4>, read_write> = var
+}
+
+%fn_u = func(%p:ptr<uniform, vec4<i32>, read>):vec4<i32> {
+  $B2: {
+    %15:vec4<i32> = load %p
+    ret %15
+  }
+}
+%fn_s = func(%p_1:ptr<storage, vec4<i32>, read>):vec4<i32> {  # %p_1: 'p'
+  $B3: {
+    %18:vec4<i32> = load %p_1
+    ret %18
+  }
+}
+%fn_w = func(%p_2:ptr<workgroup, vec4<i32>, read_write>):vec4<i32> {  # %p_2: 'p'
+  $B4: {
+    %21:vec4<i32> = load %p_2
+    ret %21
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %I:i32 = let 3i
+    %J:i32 = let 4i
+    %u:vec4<i32> = call %fn_u, %U
+    %26:ptr<uniform, vec4<i32>, read> = access %U_str, 0u
+    %u_str:vec4<i32> = call %fn_u, %26
+    %28:ptr<uniform, vec4<i32>, read> = access %U_arr, 0i
+    %u_arr0:vec4<i32> = call %fn_u, %28
+    %30:ptr<uniform, vec4<i32>, read> = access %U_arr, 1i
+    %u_arr1:vec4<i32> = call %fn_u, %30
+    %32:ptr<uniform, vec4<i32>, read> = access %U_arr, %I
+    %u_arrI:vec4<i32> = call %fn_u, %32
+    %34:ptr<uniform, vec4<i32>, read> = access %U_arr_arr, 1i, 0i
+    %u_arr1_arr0:vec4<i32> = call %fn_u, %34
+    %36:ptr<uniform, vec4<i32>, read> = access %U_arr_arr, 2i, %I
+    %u_arr2_arrI:vec4<i32> = call %fn_u, %36
+    %38:ptr<uniform, vec4<i32>, read> = access %U_arr_arr, %I, 2i
+    %u_arrI_arr2:vec4<i32> = call %fn_u, %38
+    %40:ptr<uniform, vec4<i32>, read> = access %U_arr_arr, %I, %J
+    %u_arrI_arrJ:vec4<i32> = call %fn_u, %40
+    %s:vec4<i32> = call %fn_s, %S
+    %43:ptr<storage, vec4<i32>, read> = access %S_str, 0u
+    %s_str:vec4<i32> = call %fn_s, %43
+    %45:ptr<storage, vec4<i32>, read> = access %S_arr, 0i
+    %s_arr0:vec4<i32> = call %fn_s, %45
+    %47:ptr<storage, vec4<i32>, read> = access %S_arr, 1i
+    %s_arr1:vec4<i32> = call %fn_s, %47
+    %49:ptr<storage, vec4<i32>, read> = access %S_arr, %I
+    %s_arrI:vec4<i32> = call %fn_s, %49
+    %51:ptr<storage, vec4<i32>, read> = access %S_arr_arr, 1i, 0i
+    %s_arr1_arr0:vec4<i32> = call %fn_s, %51
+    %53:ptr<storage, vec4<i32>, read> = access %S_arr_arr, 2i, %I
+    %s_arr2_arrI:vec4<i32> = call %fn_s, %53
+    %55:ptr<storage, vec4<i32>, read> = access %S_arr_arr, %I, 2i
+    %s_arrI_arr2:vec4<i32> = call %fn_s, %55
+    %57:ptr<storage, vec4<i32>, read> = access %S_arr_arr, %I, %J
+    %s_arrI_arrJ:vec4<i32> = call %fn_s, %57
+    %w:vec4<i32> = call %fn_w, %W
+    %60:ptr<workgroup, vec4<i32>, read_write> = access %W_str, 0u
+    %w_str:vec4<i32> = call %fn_w, %60
+    %62:ptr<workgroup, vec4<i32>, read_write> = access %W_arr, 0i
+    %w_arr0:vec4<i32> = call %fn_w, %62
+    %64:ptr<workgroup, vec4<i32>, read_write> = access %W_arr, 1i
+    %w_arr1:vec4<i32> = call %fn_w, %64
+    %66:ptr<workgroup, vec4<i32>, read_write> = access %W_arr, %I
+    %w_arrI:vec4<i32> = call %fn_w, %66
+    %68:ptr<workgroup, vec4<i32>, read_write> = access %W_arr_arr, 1i, 0i
+    %w_arr1_arr0:vec4<i32> = call %fn_w, %68
+    %70:ptr<workgroup, vec4<i32>, read_write> = access %W_arr_arr, 2i, %I
+    %w_arr2_arrI:vec4<i32> = call %fn_w, %70
+    %72:ptr<workgroup, vec4<i32>, read_write> = access %W_arr_arr, %I, 2i
+    %w_arrI_arr2:vec4<i32> = call %fn_w, %72
+    %74:ptr<workgroup, vec4<i32>, read_write> = access %W_arr_arr, %I, %J
+    %w_arrI_arrJ:vec4<i32> = call %fn_w, %74
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+str = struct @align(16) {
+  i:vec4<i32> @offset(0)
+}
+
+$B1: {  # root
+  %U:ptr<uniform, vec4<i32>, read> = var @binding_point(0, 0)
+  %U_str:ptr<uniform, str, read> = var @binding_point(0, 1)
+  %U_arr:ptr<uniform, array<vec4<i32>, 8>, read> = var @binding_point(0, 2)
+  %U_arr_arr:ptr<uniform, array<array<vec4<i32>, 8>, 4>, read> = var @binding_point(0, 3)
+  %S:ptr<storage, vec4<i32>, read> = var @binding_point(1, 0)
+  %S_str:ptr<storage, str, read> = var @binding_point(1, 1)
+  %S_arr:ptr<storage, array<vec4<i32>, 8>, read> = var @binding_point(1, 2)
+  %S_arr_arr:ptr<storage, array<array<vec4<i32>, 8>, 4>, read> = var @binding_point(1, 3)
+  %W:ptr<workgroup, vec4<i32>, read_write> = var
+  %W_str:ptr<workgroup, str, read_write> = var
+  %W_arr:ptr<workgroup, array<vec4<i32>, 8>, read_write> = var
+  %W_arr_arr:ptr<workgroup, array<array<vec4<i32>, 8>, 4>, read_write> = var
+}
+
+%fn_u = func():vec4<i32> {
+  $B2: {
+    %14:vec4<i32> = load %U
+    ret %14
+  }
+}
+%fn_u_1 = func():vec4<i32> {  # %fn_u_1: 'fn_u'
+  $B3: {
+    %16:ptr<uniform, vec4<i32>, read> = access %U_str, 0u
+    %17:vec4<i32> = load %16
+    ret %17
+  }
+}
+%fn_u_2 = func(%p_indices:array<u32, 1>):vec4<i32> {  # %fn_u_2: 'fn_u'
+  $B4: {
+    %20:u32 = access %p_indices, 0u
+    %21:ptr<uniform, vec4<i32>, read> = access %U_arr, %20
+    %22:vec4<i32> = load %21
+    ret %22
+  }
+}
+%fn_u_3 = func(%p_indices_1:array<u32, 2>):vec4<i32> {  # %fn_u_3: 'fn_u', %p_indices_1: 'p_indices'
+  $B5: {
+    %25:u32 = access %p_indices_1, 0u
+    %26:u32 = access %p_indices_1, 1u
+    %27:ptr<uniform, vec4<i32>, read> = access %U_arr_arr, %25, %26
+    %28:vec4<i32> = load %27
+    ret %28
+  }
+}
+%fn_s = func():vec4<i32> {
+  $B6: {
+    %30:vec4<i32> = load %S
+    ret %30
+  }
+}
+%fn_s_1 = func():vec4<i32> {  # %fn_s_1: 'fn_s'
+  $B7: {
+    %32:ptr<storage, vec4<i32>, read> = access %S_str, 0u
+    %33:vec4<i32> = load %32
+    ret %33
+  }
+}
+%fn_s_2 = func(%p_indices_2:array<u32, 1>):vec4<i32> {  # %fn_s_2: 'fn_s', %p_indices_2: 'p_indices'
+  $B8: {
+    %36:u32 = access %p_indices_2, 0u
+    %37:ptr<storage, vec4<i32>, read> = access %S_arr, %36
+    %38:vec4<i32> = load %37
+    ret %38
+  }
+}
+%fn_s_3 = func(%p_indices_3:array<u32, 2>):vec4<i32> {  # %fn_s_3: 'fn_s', %p_indices_3: 'p_indices'
+  $B9: {
+    %41:u32 = access %p_indices_3, 0u
+    %42:u32 = access %p_indices_3, 1u
+    %43:ptr<storage, vec4<i32>, read> = access %S_arr_arr, %41, %42
+    %44:vec4<i32> = load %43
+    ret %44
+  }
+}
+%fn_w = func():vec4<i32> {
+  $B10: {
+    %46:vec4<i32> = load %W
+    ret %46
+  }
+}
+%fn_w_1 = func():vec4<i32> {  # %fn_w_1: 'fn_w'
+  $B11: {
+    %48:ptr<workgroup, vec4<i32>, read_write> = access %W_str, 0u
+    %49:vec4<i32> = load %48
+    ret %49
+  }
+}
+%fn_w_2 = func(%p_indices_4:array<u32, 1>):vec4<i32> {  # %fn_w_2: 'fn_w', %p_indices_4: 'p_indices'
+  $B12: {
+    %52:u32 = access %p_indices_4, 0u
+    %53:ptr<workgroup, vec4<i32>, read_write> = access %W_arr, %52
+    %54:vec4<i32> = load %53
+    ret %54
+  }
+}
+%fn_w_3 = func(%p_indices_5:array<u32, 2>):vec4<i32> {  # %fn_w_3: 'fn_w', %p_indices_5: 'p_indices'
+  $B13: {
+    %57:u32 = access %p_indices_5, 0u
+    %58:u32 = access %p_indices_5, 1u
+    %59:ptr<workgroup, vec4<i32>, read_write> = access %W_arr_arr, %57, %58
+    %60:vec4<i32> = load %59
+    ret %60
+  }
+}
+%b = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B14: {
+    %I:i32 = let 3i
+    %J:i32 = let 4i
+    %u:vec4<i32> = call %fn_u
+    %u_str:vec4<i32> = call %fn_u_1
+    %u_arr0:vec4<i32> = call %fn_u_2, array<u32, 1>(0u)
+    %u_arr1:vec4<i32> = call %fn_u_2, array<u32, 1>(1u)
+    %68:u32 = convert %I
+    %69:array<u32, 1> = construct %68
+    %u_arrI:vec4<i32> = call %fn_u_2, %69
+    %u_arr1_arr0:vec4<i32> = call %fn_u_3, array<u32, 2>(1u, 0u)
+    %72:u32 = convert %I
+    %73:array<u32, 2> = construct 2u, %72
+    %u_arr2_arrI:vec4<i32> = call %fn_u_3, %73
+    %75:u32 = convert %I
+    %76:array<u32, 2> = construct %75, 2u
+    %u_arrI_arr2:vec4<i32> = call %fn_u_3, %76
+    %78:u32 = convert %I
+    %79:u32 = convert %J
+    %80:array<u32, 2> = construct %78, %79
+    %u_arrI_arrJ:vec4<i32> = call %fn_u_3, %80
+    %s:vec4<i32> = call %fn_s
+    %s_str:vec4<i32> = call %fn_s_1
+    %s_arr0:vec4<i32> = call %fn_s_2, array<u32, 1>(0u)
+    %s_arr1:vec4<i32> = call %fn_s_2, array<u32, 1>(1u)
+    %86:u32 = convert %I
+    %87:array<u32, 1> = construct %86
+    %s_arrI:vec4<i32> = call %fn_s_2, %87
+    %s_arr1_arr0:vec4<i32> = call %fn_s_3, array<u32, 2>(1u, 0u)
+    %90:u32 = convert %I
+    %91:array<u32, 2> = construct 2u, %90
+    %s_arr2_arrI:vec4<i32> = call %fn_s_3, %91
+    %93:u32 = convert %I
+    %94:array<u32, 2> = construct %93, 2u
+    %s_arrI_arr2:vec4<i32> = call %fn_s_3, %94
+    %96:u32 = convert %I
+    %97:u32 = convert %J
+    %98:array<u32, 2> = construct %96, %97
+    %s_arrI_arrJ:vec4<i32> = call %fn_s_3, %98
+    %w:vec4<i32> = call %fn_w
+    %w_str:vec4<i32> = call %fn_w_1
+    %w_arr0:vec4<i32> = call %fn_w_2, array<u32, 1>(0u)
+    %w_arr1:vec4<i32> = call %fn_w_2, array<u32, 1>(1u)
+    %104:u32 = convert %I
+    %105:array<u32, 1> = construct %104
+    %w_arrI:vec4<i32> = call %fn_w_2, %105
+    %w_arr1_arr0:vec4<i32> = call %fn_w_3, array<u32, 2>(1u, 0u)
+    %108:u32 = convert %I
+    %109:array<u32, 2> = construct 2u, %108
+    %w_arr2_arrI:vec4<i32> = call %fn_w_3, %109
+    %111:u32 = convert %I
+    %112:array<u32, 2> = construct %111, 2u
+    %w_arrI_arr2:vec4<i32> = call %fn_w_3, %112
+    %114:u32 = convert %I
+    %115:u32 = convert %J
+    %116:array<u32, 2> = construct %114, %115
+    %w_arrI_arrJ:vec4<i32> = call %fn_w_3, %116
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_Complex, Indexing) {
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read>("S");
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_i = b.FunctionParam("i", ty.i32());
+    fn_a->SetParams({fn_a_i});
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, fn_a_i); });
+
+    auto* fn_b = b.Function("b", ty.i32());
+    auto* fn_b_p = b.FunctionParam("p", ty.ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>());
+    fn_b->SetParams({fn_b_p});
+    b.Append(fn_b->Block(), [&] {
+        auto load_0 = b.Load(b.Access(ty.ptr<storage, i32, read>(), fn_b_p, 0_i, 1_i, 2_i));
+        auto call_0 = b.Call(fn_a, load_0);
+        auto call_1 = b.Call(fn_a, 3_i);
+        auto load_1 = b.Load(b.Access(ty.ptr<storage, i32, read>(), fn_b_p, call_1, 4_i, 5_i));
+        auto call_2 = b.Call(fn_a, load_1);
+        auto call_3 = b.Call(fn_a, 7_i);
+        auto load_2 = b.Load(b.Access(ty.ptr<storage, i32, read>(), fn_b_p, 6_i, call_3, 8_i));
+        auto call_4 = b.Call(fn_a, load_2);
+        auto load_3 =
+            b.Load(b.Access(ty.ptr<storage, i32, read>(), fn_b_p, call_0, call_2, call_4));
+
+        b.Return(fn_b, load_3);
+    });
+
+    auto* fn_c = b.Function("c", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_c->Block(), [&] {
+        auto* forty_two = b.Let("forty_two", 42_i);
+        auto* access =
+            b.Access(ty.ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>(), S, forty_two);
+        auto* v = b.Call(fn_b, access);
+        b.ir.SetName(v, "v");
+        b.Return(fn_c);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%i:i32):i32 {
+  $B2: {
+    ret %i
+  }
+}
+%b = func(%p:ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>):i32 {
+  $B3: {
+    %6:ptr<storage, i32, read> = access %p, 0i, 1i, 2i
+    %7:i32 = load %6
+    %8:i32 = call %a, %7
+    %9:i32 = call %a, 3i
+    %10:ptr<storage, i32, read> = access %p, %9, 4i, 5i
+    %11:i32 = load %10
+    %12:i32 = call %a, %11
+    %13:i32 = call %a, 7i
+    %14:ptr<storage, i32, read> = access %p, 6i, %13, 8i
+    %15:i32 = load %14
+    %16:i32 = call %a, %15
+    %17:ptr<storage, i32, read> = access %p, %8, %12, %16
+    %18:i32 = load %17
+    ret %18
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %21:ptr<storage, array<array<array<i32, 9>, 9>, 9>, read> = access %S, %forty_two
+    %v:i32 = call %b, %21
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%i:i32):i32 {
+  $B2: {
+    ret %i
+  }
+}
+%b = func(%p_indices:array<u32, 1>):i32 {
+  $B3: {
+    %6:u32 = access %p_indices, 0u
+    %7:ptr<storage, array<array<array<i32, 9>, 9>, 9>, read> = access %S, %6
+    %8:ptr<storage, i32, read> = access %7, 0i, 1i, 2i
+    %9:i32 = load %8
+    %10:i32 = call %a, %9
+    %11:i32 = call %a, 3i
+    %12:ptr<storage, i32, read> = access %7, %11, 4i, 5i
+    %13:i32 = load %12
+    %14:i32 = call %a, %13
+    %15:i32 = call %a, 7i
+    %16:ptr<storage, i32, read> = access %7, 6i, %15, 8i
+    %17:i32 = load %16
+    %18:i32 = call %a, %17
+    %19:ptr<storage, i32, read> = access %7, %10, %14, %18
+    %20:i32 = load %19
+    ret %20
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %23:u32 = convert %forty_two
+    %24:array<u32, 1> = construct %23
+    %v:i32 = call %b, %24
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_Complex, IndexingInPtrCall) {
+    Var* S = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read>("S");
+                 S->SetBindingPoint(0, 0);
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_i = b.FunctionParam("i", ty.ptr<storage, i32, read>());
+    fn_a->SetParams({
+        b.FunctionParam("pre", ty.i32()),
+        fn_a_i,
+        b.FunctionParam("post", ty.i32()),
+    });
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, b.Load(fn_a_i)); });
+
+    auto* fn_b = b.Function("b", ty.i32());
+    auto* fn_b_p = b.FunctionParam("p", ty.ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>());
+    fn_b->SetParams({fn_b_p});
+    b.Append(fn_b->Block(), [&] {
+        auto access_0 = b.Access(ty.ptr<storage, i32, read>(), fn_b_p, 0_i, 1_i, 2_i);
+        auto call_0 = b.Call(fn_a, 20_i, access_0, 30_i);
+
+        auto access_1 = b.Access(ty.ptr<storage, i32, read>(), fn_b_p, 3_i, 4_i, 5_i);
+        auto call_1 = b.Call(fn_a, 40_i, access_1, 50_i);
+
+        auto access_2 = b.Access(ty.ptr<storage, i32, read>(), fn_b_p, 6_i, 7_i, 8_i);
+        auto call_2 = b.Call(fn_a, 60_i, access_2, 70_i);
+
+        auto access_3 = b.Access(ty.ptr<storage, i32, read>(), fn_b_p, call_0, call_1, call_2);
+        auto call_3 = b.Call(fn_a, 10_i, access_3, 80_i);
+
+        b.Return(fn_b, call_3);
+    });
+
+    auto* fn_c = b.Function("c", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_c->Block(), [&] {
+        auto* forty_two = b.Let("forty_two", 42_i);
+        auto* access =
+            b.Access(ty.ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>(), S, forty_two);
+        auto* v = b.Call(fn_b, access);
+        b.ir.SetName(v, "v");
+        b.Return(fn_c);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %i:ptr<storage, i32, read>, %post:i32):i32 {
+  $B2: {
+    %6:i32 = load %i
+    ret %6
+  }
+}
+%b = func(%p:ptr<storage, array<array<array<i32, 9>, 9>, 9>, read>):i32 {
+  $B3: {
+    %9:ptr<storage, i32, read> = access %p, 0i, 1i, 2i
+    %10:i32 = call %a, 20i, %9, 30i
+    %11:ptr<storage, i32, read> = access %p, 3i, 4i, 5i
+    %12:i32 = call %a, 40i, %11, 50i
+    %13:ptr<storage, i32, read> = access %p, 6i, 7i, 8i
+    %14:i32 = call %a, 60i, %13, 70i
+    %15:ptr<storage, i32, read> = access %p, %10, %12, %14
+    %16:i32 = call %a, 10i, %15, 80i
+    ret %16
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %19:ptr<storage, array<array<array<i32, 9>, 9>, 9>, read> = access %S, %forty_two
+    %v:i32 = call %b, %19
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<array<i32, 9>, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+}
+
+%a = func(%pre:i32, %i_indices:array<u32, 4>, %post:i32):i32 {
+  $B2: {
+    %6:u32 = access %i_indices, 0u
+    %7:u32 = access %i_indices, 1u
+    %8:u32 = access %i_indices, 2u
+    %9:u32 = access %i_indices, 3u
+    %10:ptr<storage, i32, read> = access %S, %6, %7, %8, %9
+    %11:i32 = load %10
+    ret %11
+  }
+}
+%b = func(%p_indices:array<u32, 1>):i32 {
+  $B3: {
+    %14:u32 = access %p_indices, 0u
+    %15:array<u32, 4> = construct %14, 0u, 1u, 2u
+    %16:i32 = call %a, 20i, %15, 30i
+    %17:array<u32, 4> = construct %14, 3u, 4u, 5u
+    %18:i32 = call %a, 40i, %17, 50i
+    %19:array<u32, 4> = construct %14, 6u, 7u, 8u
+    %20:i32 = call %a, 60i, %19, 70i
+    %21:u32 = convert %16
+    %22:u32 = convert %18
+    %23:u32 = convert %20
+    %24:array<u32, 4> = construct %14, %21, %22, %23
+    %25:i32 = call %a, 10i, %24, 80i
+    ret %25
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %28:u32 = convert %forty_two
+    %29:array<u32, 1> = construct %28
+    %v:i32 = call %b, %29
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_Complex, IndexingDualPointers) {
+    Var* S = nullptr;
+    Var* U = nullptr;
+    b.Append(b.ir.root_block,
+             [&] {  //
+                 S = b.Var<storage, array<array<array<i32, 9>, 9>, 50>, read>("S");
+                 S->SetBindingPoint(0, 0);
+                 U = b.Var<uniform, array<array<array<vec4<i32>, 9>, 9>, 50>, read>("U");
+                 U->SetBindingPoint(0, 1);
+             });
+
+    auto* fn_a = b.Function("a", ty.i32());
+    auto* fn_a_i = b.FunctionParam("i", ty.i32());
+    fn_a->SetParams({fn_a_i});
+    b.Append(fn_a->Block(), [&] { b.Return(fn_a, fn_a_i); });
+
+    auto* fn_b = b.Function("b", ty.i32());
+    auto* fn_b_s = b.FunctionParam("s", ty.ptr<storage, array<array<i32, 9>, 9>, read>());
+    auto* fn_b_u = b.FunctionParam("u", ty.ptr<uniform, array<array<vec4<i32>, 9>, 9>, read>());
+    fn_b->SetParams({fn_b_s, fn_b_u});
+    b.Append(fn_b->Block(), [&] {
+        auto access_0 = b.Access(ty.ptr<uniform, vec4<i32>, read>(), fn_b_u, 0_i, 1_i);
+        auto call_0 = b.Call(fn_a, b.LoadVectorElement(access_0, 0_u));
+        auto call_1 = b.Call(fn_a, 3_i);
+
+        auto access_1 = b.Access(ty.ptr<uniform, vec4<i32>, read>(), fn_b_u, call_1, 4_i);
+        auto call_2 = b.Call(fn_a, b.LoadVectorElement(access_1, 1_u));
+
+        auto access_2 = b.Access(ty.ptr<storage, i32, read>(), fn_b_s, call_0, call_2);
+
+        b.Return(fn_b, b.Load(access_2));
+    });
+
+    auto* fn_c = b.Function("c", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(fn_c->Block(), [&] {
+        auto* forty_two = b.Let("forty_two", 42_i);
+        auto* twenty_four = b.Let("twenty_four", 24_i);
+        auto* access_0 = b.Access(ty.ptr<storage, array<array<i32, 9>, 9>, read>(), S, forty_two);
+        auto* access_1 =
+            b.Access(ty.ptr<uniform, array<array<vec4<i32>, 9>, 9>, read>(), U, twenty_four);
+        auto* v = b.Call(fn_b, access_0, access_1);
+        b.ir.SetName(v, "v");
+        b.Return(fn_c);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<i32, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+  %U:ptr<uniform, array<array<array<vec4<i32>, 9>, 9>, 50>, read> = var @binding_point(0, 1)
+}
+
+%a = func(%i:i32):i32 {
+  $B2: {
+    ret %i
+  }
+}
+%b = func(%s:ptr<storage, array<array<i32, 9>, 9>, read>, %u:ptr<uniform, array<array<vec4<i32>, 9>, 9>, read>):i32 {
+  $B3: {
+    %8:ptr<uniform, vec4<i32>, read> = access %u, 0i, 1i
+    %9:i32 = load_vector_element %8, 0u
+    %10:i32 = call %a, %9
+    %11:i32 = call %a, 3i
+    %12:ptr<uniform, vec4<i32>, read> = access %u, %11, 4i
+    %13:i32 = load_vector_element %12, 1u
+    %14:i32 = call %a, %13
+    %15:ptr<storage, i32, read> = access %s, %10, %14
+    %16:i32 = load %15
+    ret %16
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %twenty_four:i32 = let 24i
+    %20:ptr<storage, array<array<i32, 9>, 9>, read> = access %S, %forty_two
+    %21:ptr<uniform, array<array<vec4<i32>, 9>, 9>, read> = access %U, %twenty_four
+    %v:i32 = call %b, %20, %21
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %S:ptr<storage, array<array<array<i32, 9>, 9>, 50>, read> = var @binding_point(0, 0)
+  %U:ptr<uniform, array<array<array<vec4<i32>, 9>, 9>, 50>, read> = var @binding_point(0, 1)
+}
+
+%a = func(%i:i32):i32 {
+  $B2: {
+    ret %i
+  }
+}
+%b = func(%s_indices:array<u32, 1>, %u_indices:array<u32, 1>):i32 {
+  $B3: {
+    %8:u32 = access %s_indices, 0u
+    %9:ptr<storage, array<array<i32, 9>, 9>, read> = access %S, %8
+    %10:u32 = access %u_indices, 0u
+    %11:ptr<uniform, array<array<vec4<i32>, 9>, 9>, read> = access %U, %10
+    %12:ptr<uniform, vec4<i32>, read> = access %11, 0i, 1i
+    %13:i32 = load_vector_element %12, 0u
+    %14:i32 = call %a, %13
+    %15:i32 = call %a, 3i
+    %16:ptr<uniform, vec4<i32>, read> = access %11, %15, 4i
+    %17:i32 = load_vector_element %16, 1u
+    %18:i32 = call %a, %17
+    %19:ptr<storage, i32, read> = access %9, %14, %18
+    %20:i32 = load %19
+    ret %20
+  }
+}
+%c = @fragment func():void {
+  $B4: {
+    %forty_two:i32 = let 42i
+    %twenty_four:i32 = let 24i
+    %24:u32 = convert %forty_two
+    %25:array<u32, 1> = construct %24
+    %26:u32 = convert %twenty_four
+    %27:array<u32, 1> = construct %26
+    %v:i32 = call %b, %25, %27
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace complex_tests
+
+////////////////////////////////////////////////////////////////////////////////
+// buffer_view tests
+////////////////////////////////////////////////////////////////////////////////
+namespace buffer_view_test {
+
+struct IR_DirectVariableAccessTest_BufferView : public TransformTest {
+    void SetUp() override { mod.properties.Add(Property::kAllowBufferTypes); }
+};
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Simple_BufferLength) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    mod.root_block->Append(v);
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, ty.unsized_buffer()));
+    foo->SetParams({p});
+    b.Append(foo->Block(), [&] {
+        b.Call(ty.u32(), BuiltinFn::kBufferLength, p);
+        b.Return(foo);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, v);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, buffer, read_write>):void {
+  $B2: {
+    %4:u32 = bufferLength %p
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %6:void = call %foo, %v
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func():void {
+  $B2: {
+    %3:u32 = bufferLength %v
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %5:void = call %foo
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Simple_BufferView) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    mod.root_block->Append(v);
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, ty.unsized_buffer()));
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    foo->SetParams({p, offset});
+    b.Append(foo->Block(), [&] {
+        b.CallExplicit(ty.ptr(storage, ty.u32()), BuiltinFn::kBufferView,
+                       Vector<TemplateParameter, 1>{ty.u32()}, p, offset);
+        b.Return(foo);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, v, 16_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, buffer, read_write>, %offset:u32):void {
+  $B2: {
+    %5:ptr<storage, u32, read_write> = bufferView<u32> %p, %offset
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %7:void = call %foo, %v, 16u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%offset:u32):void {
+  $B2: {
+    %4:ptr<storage, u32, read_write> = bufferView<u32> %v, %offset
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %6:void = call %foo, 16u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Simple_BufferArrayView) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    mod.root_block->Append(v);
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, ty.unsized_buffer()));
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    auto* size = b.FunctionParam("size", ty.u32());
+    foo->SetParams({p, offset, size});
+    b.Append(foo->Block(), [&] {
+        b.CallExplicit(ty.ptr(storage, ty.runtime_array(ty.u32())), BuiltinFn::kBufferArrayView,
+                       Vector<TemplateParameter, 1>{ty.runtime_array(ty.u32())}, p, offset, size);
+        b.Return(foo);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, v, 16_u, 64_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, buffer, read_write>, %offset:u32, %size:u32):void {
+  $B2: {
+    %6:ptr<storage, array<u32>, read_write> = bufferArrayView<array<u32>> %p, %offset, %size
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %8:void = call %foo, %v, 16u, 64u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%offset:u32, %size:u32):void {
+  $B2: {
+    %5:ptr<storage, array<u32>, read_write> = bufferArrayView<array<u32>> %v, %offset, %size
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %7:void = call %foo, 16u, 64u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferView_Chain) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* arr_ty = ty.array(ty.vec4(ty.u32()), 4_u);
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    foo->SetParams({offset});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), bar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>, 4>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32):void {
+  $B3: {
+    %8:ptr<workgroup, array<vec4<u32>, 4>, read_write> = bufferView<array<vec4<u32>, 4>> %v, %offset
+    %9:void = call %bar, %8
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %11:void = call %foo, 1u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<workgroup, array<vec4<u32>, 4>, read_write> = bufferView<array<vec4<u32>, 4>> %v, %4
+    %6:ptr<workgroup, vec4<u32>, read_write> = access %5, 3u
+    %7:u32 = load_vector_element %6, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32):void {
+  $B3: {
+    %10:array<u32, 1> = construct %offset
+    %11:void = call %bar, %10
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %13:void = call %foo, 1u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferView_Chain_WithLength) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* arr_ty = ty.array(ty.vec4(ty.u32()), 4_u);
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    auto* length = b.FunctionParam("length", ty.u32());
+    foo->SetParams({offset, length});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset, length);
+        b.Call(ty.void_(), bar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u, 2_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>, 4>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %length:u32):void {
+  $B3: {
+    %9:ptr<workgroup, array<vec4<u32>, 4>, read_write> = bufferView<array<vec4<u32>, 4>> %v, %offset, %length
+    %10:void = call %bar, %9
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %12:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 2>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:u32 = access %p_view_args, 1u
+    %6:ptr<workgroup, array<vec4<u32>, 4>, read_write> = bufferView<array<vec4<u32>, 4>> %v, %4, %5
+    %7:ptr<workgroup, vec4<u32>, read_write> = access %6, 3u
+    %8:u32 = load_vector_element %7, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %length:u32):void {
+  $B3: {
+    %12:array<u32, 2> = construct %offset, %length
+    %13:void = call %bar, %12
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %15:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferArrayView_Chain) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* arr_ty = ty.runtime_array(ty.vec4(ty.u32()));
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    auto* size = b.FunctionParam("size", ty.u32());
+    foo->SetParams({offset, size});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferArrayView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset, size);
+        b.Call(ty.void_(), bar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u, 2_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32):void {
+  $B3: {
+    %9:ptr<workgroup, array<vec4<u32>>, read_write> = bufferArrayView<array<vec4<u32>>> %v, %offset, %size
+    %10:void = call %bar, %9
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %12:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 2>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:u32 = access %p_view_args, 1u
+    %6:ptr<workgroup, array<vec4<u32>>, read_write> = bufferArrayView<array<vec4<u32>>> %v, %4, %5
+    %7:ptr<workgroup, vec4<u32>, read_write> = access %6, 3u
+    %8:u32 = load_vector_element %7, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32):void {
+  $B3: {
+    %12:array<u32, 2> = construct %offset, %size
+    %13:void = call %bar, %12
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %15:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferArrayView_Chain_WithLength) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* arr_ty = ty.runtime_array(ty.vec4(ty.u32()));
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    auto* size = b.FunctionParam("size", ty.u32());
+    auto* length = b.FunctionParam("length", ty.u32());
+    foo->SetParams({offset, size, length});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferArrayView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset, size, length);
+        b.Call(ty.void_(), bar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u, 2_u, 3_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32, %length:u32):void {
+  $B3: {
+    %10:ptr<workgroup, array<vec4<u32>>, read_write> = bufferArrayView<array<vec4<u32>>> %v, %offset, %size, %length
+    %11:void = call %bar, %10
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %13:void = call %foo, 1u, 2u, 3u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 3>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:u32 = access %p_view_args, 1u
+    %6:u32 = access %p_view_args, 2u
+    %7:ptr<workgroup, array<vec4<u32>>, read_write> = bufferArrayView<array<vec4<u32>>> %v, %4, %5, %6
+    %8:ptr<workgroup, vec4<u32>, read_write> = access %7, 3u
+    %9:u32 = load_vector_element %8, 1u
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32, %length:u32):void {
+  $B3: {
+    %14:array<u32, 3> = construct %offset, %size, %length
+    %15:void = call %bar, %14
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B4: {
+    %17:void = call %foo, 1u, 2u, 3u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferView_MultiChain) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* sub_arr_ty = ty.array(ty.vec4(ty.u32()), 4_u);
+    auto* arr_ty = ty.array(sub_arr_ty, 4_u);
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, sub_arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foobar = b.Function("foobar", ty.void_());
+    auto* foobar_q = b.FunctionParam("q", ty.ptr(workgroup, arr_ty));
+    foobar->SetParams({foobar_q});
+    b.Append(foobar->Block(), [&] {
+        auto* idx = b.Let("idx", 3_u);
+        auto* a = b.Access(ty.ptr(workgroup, sub_arr_ty), foobar_q, idx);
+        b.Call(ty.void_(), bar, a);
+        b.Return(foobar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    foo->SetParams({offset});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), foobar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>, 4>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foobar = func(%q:ptr<workgroup, array<array<vec4<u32>, 4>, 4>, read_write>):void {
+  $B3: {
+    %idx:u32 = let 3u
+    %9:ptr<workgroup, array<vec4<u32>, 4>, read_write> = access %q, %idx
+    %10:void = call %bar, %9
+    ret
+  }
+}
+%foo = func(%offset:u32):void {
+  $B4: {
+    %13:ptr<workgroup, array<array<vec4<u32>, 4>, 4>, read_write> = bufferView<array<array<vec4<u32>, 4>, 4>> %v, %offset
+    %14:void = call %foobar, %13
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %16:void = call %foo, 1u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 1>, %p_indices:array<u32, 1>):void {
+  $B2: {
+    %5:u32 = access %p_view_args, 0u
+    %6:ptr<workgroup, array<array<vec4<u32>, 4>, 4>, read_write> = bufferView<array<array<vec4<u32>, 4>, 4>> %v, %5
+    %7:u32 = access %p_indices, 0u
+    %8:ptr<workgroup, array<vec4<u32>, 4>, read_write> = access %6, %7
+    %9:ptr<workgroup, vec4<u32>, read_write> = access %8, 3u
+    %10:u32 = load_vector_element %9, 1u
+    ret
+  }
+}
+%foobar = func(%q_view_args:array<u32, 1>):void {
+  $B3: {
+    %13:u32 = access %q_view_args, 0u
+    %idx:u32 = let 3u
+    %15:array<u32, 1> = construct %13
+    %16:array<u32, 1> = construct %idx
+    %17:void = call %bar, %15, %16
+    ret
+  }
+}
+%foo = func(%offset:u32):void {
+  $B4: {
+    %20:array<u32, 1> = construct %offset
+    %21:void = call %foobar, %20
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %23:void = call %foo, 1u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, BufferArrayView_MultiChain) {
+    auto* v = b.Var("v", ty.ptr(workgroup, ty.buffer(128)));
+    mod.root_block->Append(v);
+
+    auto* sub_arr_ty = ty.array(ty.vec4(ty.u32()), 4_u);
+    auto* arr_ty = ty.runtime_array(sub_arr_ty);
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(workgroup, sub_arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        auto* a = b.Access(ty.ptr(workgroup, ty.vec4(ty.u32())), bar_p, 3_u);
+        b.LoadVectorElement(a, 1_u);
+        b.Return(bar);
+    });
+
+    auto* foobar = b.Function("foobar", ty.void_());
+    auto* foobar_q = b.FunctionParam("q", ty.ptr(workgroup, arr_ty));
+    foobar->SetParams({foobar_q});
+    b.Append(foobar->Block(), [&] {
+        auto* idx = b.Let("idx", 3_u);
+        auto* a = b.Access(ty.ptr(workgroup, sub_arr_ty), foobar_q, idx);
+        b.Call(ty.void_(), bar, a);
+        b.Return(foobar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    auto* size = b.FunctionParam("size", ty.u32());
+    foo->SetParams({offset, size});
+    b.Append(foo->Block(), [&] {
+        auto* call = b.CallExplicit(ty.ptr(workgroup, arr_ty), BuiltinFn::kBufferArrayView,
+                                    Vector<TemplateParameter, 1>{arr_ty}, v, offset, size);
+        b.Call(ty.void_(), foobar, call);
+        b.Return(foo);
+    });
+
+    auto* main = b.ComputeFunction("main");
+    b.Append(main->Block(), [&] {
+        b.Call(ty.void_(), foo, 1_u, 2_u);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p:ptr<workgroup, array<vec4<u32>, 4>, read_write>):void {
+  $B2: {
+    %4:ptr<workgroup, vec4<u32>, read_write> = access %p, 3u
+    %5:u32 = load_vector_element %4, 1u
+    ret
+  }
+}
+%foobar = func(%q:ptr<workgroup, array<array<vec4<u32>, 4>>, read_write>):void {
+  $B3: {
+    %idx:u32 = let 3u
+    %9:ptr<workgroup, array<vec4<u32>, 4>, read_write> = access %q, %idx
+    %10:void = call %bar, %9
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32):void {
+  $B4: {
+    %14:ptr<workgroup, array<array<vec4<u32>, 4>>, read_write> = bufferArrayView<array<array<vec4<u32>, 4>>> %v, %offset, %size
+    %15:void = call %foobar, %14
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %17:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<workgroup, buffer<128>, read_write> = var
+}
+
+%bar = func(%p_view_args:array<u32, 2>, %p_indices:array<u32, 1>):void {
+  $B2: {
+    %5:u32 = access %p_view_args, 0u
+    %6:u32 = access %p_view_args, 1u
+    %7:ptr<workgroup, array<array<vec4<u32>, 4>>, read_write> = bufferArrayView<array<array<vec4<u32>, 4>>> %v, %5, %6
+    %8:u32 = access %p_indices, 0u
+    %9:ptr<workgroup, array<vec4<u32>, 4>, read_write> = access %7, %8
+    %10:ptr<workgroup, vec4<u32>, read_write> = access %9, 3u
+    %11:u32 = load_vector_element %10, 1u
+    ret
+  }
+}
+%foobar = func(%q_view_args:array<u32, 2>):void {
+  $B3: {
+    %14:u32 = access %q_view_args, 0u
+    %15:u32 = access %q_view_args, 1u
+    %idx:u32 = let 3u
+    %17:array<u32, 2> = construct %14, %15
+    %18:array<u32, 1> = construct %idx
+    %19:void = call %bar, %17, %18
+    ret
+  }
+}
+%foo = func(%offset:u32, %size:u32):void {
+  $B4: {
+    %23:array<u32, 2> = construct %offset, %size
+    %24:void = call %foobar, %23
+    ret
+  }
+}
+%main = @compute @workgroup_size(1u, 1u, 1u) func():void {
+  $B5: {
+    %26:void = call %foo, 1u, 2u
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Disambiguate_Fn) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32>();
+
+    auto* bar = b.Function("bar", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    bar->SetParams({p});
+    b.Append(bar->Block(), [&] { b.Return(bar); });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), bar, v1);
+
+        auto* count = b.Let("count", 10_u);
+        auto* v2 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferArrayView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset, count);
+        b.Call(ty.void_(), bar, v2);
+
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p:ptr<storage, array<u32>, read_write>):void {
+  $B2: {
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %6:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %offset
+    %7:void = call %bar, %6
+    %count:u32 = let 10u
+    %9:ptr<storage, array<u32>, read_write> = bufferArrayView<array<u32>> %v, %offset, %count
+    %10:void = call %bar, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %4
+    ret
+  }
+}
+%bar_1 = func(%p_view_args_1:array<u32, 2>):void {  # %bar_1: 'bar', %p_view_args_1: 'p_view_args'
+  $B3: {
+    %8:u32 = access %p_view_args_1, 0u
+    %9:u32 = access %p_view_args_1, 1u
+    %10:ptr<storage, array<u32>, read_write> = bufferArrayView<array<u32>> %v, %8, %9
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %offset:u32 = let 0u
+    %13:array<u32, 1> = construct %offset
+    %14:void = call %bar, %13
+    %count:u32 = let 10u
+    %16:array<u32, 2> = construct %offset, %count
+    %17:void = call %bar_1, %16
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Disambiguate_Length) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32>();
+
+    auto* bar = b.Function("bar", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    bar->SetParams({p});
+    b.Append(bar->Block(), [&] { b.Return(bar); });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), bar, v1);
+
+        auto* len = b.Let("len", 100_u);
+        auto* v2 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset, len);
+        b.Call(ty.void_(), bar, v2);
+
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p:ptr<storage, array<u32>, read_write>):void {
+  $B2: {
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %6:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %offset
+    %7:void = call %bar, %6
+    %len:u32 = let 100u
+    %9:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %offset, %len
+    %10:void = call %bar, %9
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %4
+    ret
+  }
+}
+%bar_1 = func(%p_view_args_1:array<u32, 2>):void {  # %bar_1: 'bar', %p_view_args_1: 'p_view_args'
+  $B3: {
+    %8:u32 = access %p_view_args_1, 0u
+    %9:u32 = access %p_view_args_1, 1u
+    %10:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %8, %9
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %offset:u32 = let 0u
+    %13:array<u32, 1> = construct %offset
+    %14:void = call %bar, %13
+    %len:u32 = let 100u
+    %16:array<u32, 2> = construct %offset, %len
+    %17:void = call %bar_1, %16
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, MultiLevelPropagation) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32>();
+
+    auto* bar = b.Function("bar", ty.void_());
+    auto* bar_p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    bar->SetParams({bar_p});
+    b.Append(bar->Block(), [&] {
+        b.Access(ty.ptr(storage, ty.u32()), bar_p, 0_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* foo_p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    foo->SetParams({foo_p});
+    b.Append(foo->Block(), [&] {
+        b.Call(ty.void_(), bar, foo_p);
+        b.Return(foo);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), foo, v1);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p:ptr<storage, array<u32>, read_write>):void {
+  $B2: {
+    %4:ptr<storage, u32, read_write> = access %p, 0u
+    ret
+  }
+}
+%foo = func(%p_1:ptr<storage, array<u32>, read_write>):void {  # %p_1: 'p'
+  $B3: {
+    %7:void = call %bar, %p_1
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %offset:u32 = let 0u
+    %10:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %offset
+    %11:void = call %foo, %10
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%bar = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %4
+    %6:ptr<storage, u32, read_write> = access %5, 0u
+    ret
+  }
+}
+%foo = func(%p_view_args_1:array<u32, 1>):void {  # %p_view_args_1: 'p_view_args'
+  $B3: {
+    %9:u32 = access %p_view_args_1, 0u
+    %10:array<u32, 1> = construct %9
+    %11:void = call %bar, %10
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B4: {
+    %offset:u32 = let 0u
+    %14:array<u32, 1> = construct %offset
+    %15:void = call %foo, %14
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, LetDeclaration) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32>();
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    foo->SetParams({p});
+    b.Append(foo->Block(), [&] { b.Return(foo); });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        auto* l = b.Let("l", v1);
+        b.Call(ty.void_(), foo, l);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, array<u32>, read_write>):void {
+  $B2: {
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %6:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %offset
+    %l:ptr<storage, array<u32>, read_write> = let %6
+    %8:void = call %foo, %l
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %4
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %8:array<u32, 1> = construct %offset
+    %9:void = call %foo, %8
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, DynamicArgs) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32>();
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, arr_ty));
+    foo->SetParams({p});
+    b.Append(foo->Block(), [&] { b.Return(foo); });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    auto* offset = b.FunctionParam("offset", ty.u32());
+    offset->SetBuiltin(BuiltinValue::kSampleIndex);
+    main->SetParams({offset});
+    b.Append(main->Block(), [&] {
+        auto* dyn_offset = b.Add(offset, 4_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, dyn_offset);
+        b.Call(ty.void_(), foo, v1);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, array<u32>, read_write>):void {
+  $B2: {
+    ret
+  }
+}
+%main = @fragment func(%offset:u32 [@sample_index]):void {
+  $B3: {
+    %6:u32 = add %offset, 4u
+    %7:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %6
+    %8:void = call %foo, %7
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, array<u32>, read_write> = bufferView<array<u32>> %v, %4
+    ret
+  }
+}
+%main = @fragment func(%offset:u32 [@sample_index]):void {
+  $B3: {
+    %8:u32 = add %offset, 4u
+    %9:array<u32, 1> = construct %8
+    %10:void = call %foo, %9
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Uniform) {
+    auto* v = b.Var("v", ty.ptr(uniform, ty.buffer(128)));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* arr_ty = ty.array<u32, 4>();
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(uniform, arr_ty));
+    foo->SetParams({p});
+    b.Append(foo->Block(), [&] { b.Return(foo); });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(uniform, arr_ty), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{arr_ty}, v, offset);
+        b.Call(ty.void_(), foo, v1);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %v:ptr<uniform, buffer<128>, read> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<uniform, array<u32, 4>, read>):void {
+  $B2: {
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %6:ptr<uniform, array<u32, 4>, read> = bufferView<array<u32, 4>> %v, %offset
+    %7:void = call %foo, %6
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %v:ptr<uniform, buffer<128>, read> = var @binding_point(0, 0)
+}
+
+%foo = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<uniform, array<u32, 4>, read> = bufferView<array<u32, 4>> %v, %4
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %8:array<u32, 1> = construct %offset
+    %9:void = call %foo, %8
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, Struct) {
+    auto* v = b.Var("v", ty.ptr(storage, ty.unsized_buffer()));
+    v->SetBindingPoint(0, 0);
+    b.ir.root_block->Append(v);
+
+    auto* str_ =
+        ty.Struct(mod.symbols.New("S"), {
+                                            {mod.symbols.Register("arr"), ty.array<u32, 4>()},
+                                        });
+
+    auto* foo = b.Function("foo", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, str_));
+    foo->SetParams({p});
+    b.Append(foo->Block(), [&] {
+        auto* acc = b.Access(ty.ptr(storage, ty.u32()), p, 0_u, 2_u);
+        b.Load(acc);
+        b.Return(foo);
+    });
+
+    auto* main = b.Function("main", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(main->Block(), [&] {
+        auto* offset = b.Let("offset", 0_u);
+        auto* v1 = b.CallExplicit(ty.ptr(storage, str_), BuiltinFn::kBufferView,
+                                  Vector<TemplateParameter, 1>{str_}, v, offset);
+        b.Call(ty.void_(), foo, v1);
+        b.Return(main);
+    });
+
+    auto* src = R"(
+S = struct @align(4) {
+  arr:array<u32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p:ptr<storage, S, read_write>):void {
+  $B2: {
+    %4:ptr<storage, u32, read_write> = access %p, 0u, 2u
+    %5:u32 = load %4
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %8:ptr<storage, S, read_write> = bufferView<S> %v, %offset
+    %9:void = call %foo, %8
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+S = struct @align(4) {
+  arr:array<u32, 4> @offset(0)
+}
+
+$B1: {  # root
+  %v:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+}
+
+%foo = func(%p_view_args:array<u32, 1>):void {
+  $B2: {
+    %4:u32 = access %p_view_args, 0u
+    %5:ptr<storage, S, read_write> = bufferView<S> %v, %4
+    %6:ptr<storage, u32, read_write> = access %5, 0u, 2u
+    %7:u32 = load %6
+    ret
+  }
+}
+%main = @fragment func():void {
+  $B3: {
+    %offset:u32 = let 0u
+    %10:array<u32, 1> = construct %offset
+    %11:void = call %foo, %10
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_DirectVariableAccessTest_BufferView, ConvertedParameters) {
+    auto* gv1 = b.Var("gv1", ty.ptr(storage, ty.unsized_buffer()));
+    gv1->SetBindingPoint(0, 0);
+    mod.root_block->Append(gv1);
+    auto* gv2 = b.Var("gv2", ty.ptr(storage, ty.buffer(128)));
+    gv2->SetBindingPoint(0, 1);
+    mod.root_block->Append(gv2);
+
+    auto* bar = b.Function("bar", ty.void_());
+    auto* p = b.FunctionParam("p", ty.ptr(storage, ty.unsized_buffer()));
+    bar->SetParams({p});
+    b.Append(bar->Block(), [&] {
+        b.CallExplicit(ty.ptr(storage, ty.u32()), BuiltinFn::kBufferView,
+                       Vector<TemplateParameter, 1>{ty.u32()}, p, 0_u);
+        b.Return(bar);
+    });
+
+    auto* foo = b.Function("foo", ty.void_(), core::ir::Function::PipelineStage::kFragment);
+    b.Append(foo->Block(), [&] {
+        b.Call(ty.void_(), bar, gv1);
+        b.Call(ty.void_(), bar, gv2);
+        b.Return(foo);
+    });
+
+    auto* src = R"(
+$B1: {  # root
+  %gv1:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+  %gv2:ptr<storage, buffer<128>, read_write> = var @binding_point(0, 1)
+}
+
+%bar = func(%p:ptr<storage, buffer, read_write>):void {
+  $B2: {
+    %5:ptr<storage, u32, read_write> = bufferView<u32> %p, 0u
+    ret
+  }
+}
+%foo = @fragment func():void {
+  $B3: {
+    %7:void = call %bar, %gv1
+    %8:void = call %bar, %gv2
+    ret
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    auto* expect = R"(
+$B1: {  # root
+  %gv1:ptr<storage, buffer, read_write> = var @binding_point(0, 0)
+  %gv2:ptr<storage, buffer<128>, read_write> = var @binding_point(0, 1)
+}
+
+%bar = func():void {
+  $B2: {
+    %4:ptr<storage, u32, read_write> = bufferView<u32> %gv1, 0u
+    ret
+  }
+}
+%bar_1 = func():void {  # %bar_1: 'bar'
+  $B3: {
+    %6:ptr<storage, u32, read_write> = bufferView<u32> %gv2, 0u
+    ret
+  }
+}
+%foo = @fragment func():void {
+  $B4: {
+    %8:void = call %bar
+    %9:void = call %bar_1
+    ret
+  }
+}
+)";
+
+    Run(DirectVariableAccess, DirectVariableAccessConfig{});
+
+    EXPECT_EQ(expect, str());
+}
+
+}  // namespace buffer_view_test
+
+}  // namespace
+}  // namespace tint::core::ir::transform
