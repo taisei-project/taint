@@ -26,5 +26,5 @@ giving a shit; at least we don't pin random git commits here.
 ## B-but why not CMake??
 
 Because I hate CMake, I don't use CMake, and I want nothing to do with CMake. You're free to contribute a CMake build
-system if you're willing to maintain it. Should be easier than attempting to use than whatever horrors google came up
-with. Before you do that though, I'd recommend seeing if pkgconfig works for your needs.
+system if you're willing to maintain it. Should be easier than attempting to use whatever horrors google came up with.
+Before you do that though, I'd recommend seeing if pkgconfig works for your needs.
