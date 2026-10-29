@@ -1,0 +1,6 @@
+{
+    global:
+        taint_*;
+    local:
+        *;
+};

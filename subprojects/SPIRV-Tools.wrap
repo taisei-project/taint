@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/taisei-project/SPIRV-Tools.git
+revision = meson-2026.4
+depth = 1
+
+[provide]
+dependency_names = SPIRV-Tools, SPIRV-Tools-opt, SPIRV-Tools-opt-internal, SPIRV-Tools-link, SPIRV-Tools-reduce

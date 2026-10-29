@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/taisei-project/SPIRV-Headers.git
+revision = meson-2026.4
+depth = 1
+
+[provide]
+dependency_names = SPIRV-Headers
