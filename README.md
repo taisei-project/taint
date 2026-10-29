@@ -8,7 +8,7 @@ It is focused entirely on SPIR-V to WGSL conversion and nothing else. No other f
 very good reason.
 
 Upstream is tracked on a whenever-I'm-feeling-like-it basis. The [`pull-upstream.sh`](pull-upstream.sh) script is used
-to fetch and marge the latest changes from Dawn's main branch. It uses
+to fetch and merge the latest changes from Dawn's main branch. It uses
 [git-subtree](https://www.atlassian.com/git/tutorials/git-subtree) and can be ran locally, though every run will take
 a long time because Dawn is huge.
 
