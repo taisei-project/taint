@@ -2,13 +2,13 @@
 
 Taint ([pick your favorite definition, they all fit](https://www.merriam-webster.com/dictionary/taint)) is a
 stripped-down fork/wrapper of Tint from Google's [Dawn](https://dawn.googlesource.com/dawn/) repo with a sane (read:
-ungoogled) build system and [a (soon-to-be) stable C API](blob/master/include/taint.h). 
+ungoogled) build system and [a (soon-to-be) stable C API](include/taint.h).
 
 It is focused entirely on SPIR-V to WGSL conversion and nothing else. No other functionality will be provided without a
 very good reason.
 
-Upstream is tracked on a whenever-I'm-feeling-like-it basis. The [`pull-upstream.sh`](blob/master/pull-upstream.sh)
-script is used to fetch and marge the latest changes from Dawn's main branch. It uses
+Upstream is tracked on a whenever-I'm-feeling-like-it basis. The [`pull-upstream.sh`](pull-upstream.sh) script is used
+to fetch and marge the latest changes from Dawn's main branch. It uses
 [git-subtree](https://www.atlassian.com/git/tutorials/git-subtree) and can be ran locally, though every run will take
 a long time because Dawn is huge.
 
