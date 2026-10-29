@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://github.com/taisei-project/SPIRV-Headers.git
-revision = meson-2026.4
+revision = meson-sdk-1.4.363.0
 depth = 1
 
 [provide]
