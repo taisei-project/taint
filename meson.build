@@ -347,6 +347,7 @@ libtint = static_library('tint',
     dependencies : [spirv_tools_dep, spirv_headers_dep],
     build_by_default : false,
     gnu_symbol_visibility : 'hidden',
+    override_options : ['cpp_std=c++20'],
 )
 
 tint_dep = declare_dependency(
