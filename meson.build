@@ -18,7 +18,8 @@ build_spv2wgsl = not meson.is_subproject()
 # why? because fuck you that's why. thank you google. can't miss an opportunity to make
 # your code as difficult as possible to reuse.
 # NOTE: must be static; the subproject's lib is not versioned and not installed
-spirv_tools_dep = dependency('SPIRV-Tools-opt-internal', default_options : ['default_library=static'])
+spirv_tools_dep = (subproject('SPIRV-Tools', default_options : ['default_library=static']).
+    get_variable('spirv_tools_opt_internal_dep'))
 
 # this must come after SPIRV-Tools, because its subproject wants to use the subproject
 # version of SPIRV-Headers.
