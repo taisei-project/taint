@@ -38,6 +38,11 @@ if not ndebug
     tint_args += '-DDAWN_ENABLE_ASSERTS'
 endif
 
+cpp = meson.get_compiler('cpp', native : false)
+tint_args += cpp.get_supported_arguments(
+    '-Wno-c2y-extensions',
+)
+
 # currently only includes stuff necessary for spirv->wgsl
 
 tint_src = files(
