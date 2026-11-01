@@ -385,6 +385,7 @@ libtaint = library('taint',
     gnu_symbol_visibility : 'hidden',
     version : meson.project_version(),
     include_directories : include_directories('include'),
+    override_options : ['cpp_std=c++20'],
 )
 
 if do_install
