@@ -97,16 +97,24 @@ TAINT_API void taint_module_destroy(TaintModule *module) {
     delete module;
 }
 
+static const char *return_string(const std::string& str, size_t *out_size) {
+    if(str.empty()) {
+        return nullptr;
+    }
+
+    if(out_size) {
+        *out_size = str.size();
+    }
+
+    return str.c_str();
+}
+
 TAINT_API const char *taint_module_get_diagnostics(const TaintModule *module, size_t *out_size) {
     if(module == nullptr) {
         return nullptr;
     }
 
-    if(out_size != nullptr) {
-        *out_size = module->diagnostics.size();
-    }
-
-    return module->diagnostics.c_str();
+    return return_string(module->diagnostics, out_size);
 }
 
 TAINT_API const char *taint_module_get_wgsl(const TaintModule *module, size_t *out_size) {
@@ -114,13 +122,7 @@ TAINT_API const char *taint_module_get_wgsl(const TaintModule *module, size_t *o
         return nullptr;
     }
 
-    auto &wgsl = module->wgsl.Get().wgsl;
-
-    if(out_size != nullptr) {
-        *out_size = wgsl.size();
-    }
-
-    return wgsl.c_str();
+    return return_string(module->wgsl.Get().wgsl, out_size);
 }
 
 TAINT_API TaintOptions *taint_options_create(void) {
